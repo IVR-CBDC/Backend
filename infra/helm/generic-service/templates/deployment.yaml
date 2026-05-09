@@ -1,0 +1,155 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "generic-service.fullname" . }}
+  labels:
+    {{- include "generic-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "generic-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "generic-service.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "generic-service.fullname" . }}
+      dnsConfig:
+        options:
+          - name: use-vc
+      {{- if .Values.migrations.enabled }}
+      initContainers:
+        - name: migrate
+          image: {{ .Values.migrations.image }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Raw TCP DNS resolver — bypasses broken UDP DNS (VPN interference)
+              # Reads kube-dns IP from /etc/resolv.conf, sends A query via TCP
+              RESOLVED=$(perl -e '
+                use strict;
+                use IO::Socket::INET;
+                my $host = $ARGV[0];
+                # Get kube-dns IP from resolv.conf
+                my $dns = "10.43.0.10";
+                if (open my $f, "<", "/etc/resolv.conf") {
+                  while (<$f>) { if (/^nameserver\s+([\d.]+)/) { $dns=$1; last; } }
+                  close $f;
+                }
+                # Build DNS A query packet
+                my $id = 0x1234;
+                my $header = pack("nnnnnn", $id, 0x0100, 1, 0, 0, 0);
+                my $qname = "";
+                for (split /\./, $host) { $qname .= pack("C", length($_)) . $_; }
+                $qname .= pack("C", 0);
+                my $msg = $header . $qname . pack("nn", 1, 1);
+                # TCP DNS: 2-byte length prefix + query
+                my $sock = IO::Socket::INET->new(
+                  PeerAddr=>$dns, PeerPort=>53, Proto=>"tcp", Timeout=>5
+                ) or exit 1;
+                print $sock pack("n", length($msg)) . $msg;
+                my $buf; read($sock,$buf,2) or exit 1;
+                my $len = unpack("n",$buf);
+                read($sock,$buf,$len) or exit 1;
+                close $sock;
+                # Parse response: skip header + question, find first A record
+                my $off = 12;
+                while (ord(substr($buf,$off,1))>0) { $off+=ord(substr($buf,$off,1))+1; }
+                $off += 5;
+                my $ancount = unpack("n", substr($buf,6,2));
+                for (1..$ancount) {
+                  if ((ord(substr($buf,$off,1))&0xC0)==0xC0) { $off+=2; }
+                  else { while(ord(substr($buf,$off,1))>0){$off+=ord(substr($buf,$off,1))+1;} $off++; }
+                  my($type,$class,$ttl,$rdlen)=unpack("nnNn",substr($buf,$off,10));
+                  $off+=10;
+                  if ($type==1 && $rdlen==4) {
+                    printf "%d.%d.%d.%d",unpack("CCCC",substr($buf,$off,4));
+                    exit 0;
+                  }
+                  $off+=$rdlen;
+                }
+                exit 1;
+              ' "$DB_HOST" 2>/dev/null)
+              if [ -n "$RESOLVED" ]; then
+                echo "Resolved $DB_HOST -> $RESOLVED via TCP DNS"
+                export DB_HOST="$RESOLVED"
+              else
+                echo "WARNING: TCP DNS resolution failed, using original hostname: $DB_HOST"
+              fi
+              /bin/sh /migrations/migrate.sh /migrations
+          env:
+            - name: DB_HOST
+              value: {{ .Values.migrations.db.host | quote }}
+            - name: DB_PORT
+              value: {{ .Values.migrations.db.port | quote }}
+            - name: DB_NAME
+              value: {{ .Values.migrations.db.name | quote }}
+            - name: DB_USER
+              value: {{ .Values.migrations.db.user | quote }}
+            - name: DB_PASSWORD
+              value: {{ .Values.migrations.db.password | quote }}
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+      {{- end }}
+      containers:
+        - name: {{ include "generic-service.name" . }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          {{- if .Values.env }}
+          env:
+            {{- toYaml .Values.env | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthcheck.path }}
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: {{ .Values.healthcheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthcheck.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthcheck.path }}
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          volumeMounts:
+            {{- if .Values.config.enabled }}
+            - name: config
+              mountPath: /app/config.json
+              subPath: config.json
+              readOnly: true
+            {{- end }}
+            {{- if .Values.jwtKeys.public }}
+            - name: jwt-keys
+              mountPath: {{ .Values.jwtKeys.mountPath }}/{{ .Values.jwtKeys.publicFile }}
+              subPath: {{ .Values.jwtKeys.publicFile }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.jwtKeys.private }}
+            - name: jwt-keys
+              mountPath: {{ .Values.jwtKeys.mountPath }}/jwt_private.jwk
+              subPath: jwt_private.jwk
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if .Values.config.enabled }}
+        - name: config
+          configMap:
+            name: {{ include "generic-service.fullname" . }}-config
+        {{- end }}
+        {{- if or .Values.jwtKeys.public .Values.jwtKeys.private }}
+        - name: jwt-keys
+          secret:
+            secretName: jwt-keys
+        {{- end }}
+        {{- if .Values.migrations.enabled }}
+        - name: migrations
+          configMap:
+            name: {{ include "generic-service.fullname" . }}-migrations
+            defaultMode: 0755
+        {{- end }}

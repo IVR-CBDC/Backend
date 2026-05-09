@@ -1,0 +1,75 @@
+replicaCount: 1
+
+image:
+  repository: localhost:5000/service-auth
+  tag: latest
+
+service:
+  port: 8080
+
+config:
+  enabled: true
+  json:
+    app:
+      threads_num: 2
+      log:
+        log_level: INFO
+    listeners:
+      - address: "0.0.0.0"
+        port: 8080
+        https: false
+    db_clients:
+      - name: default
+        rdbms: postgresql
+        host: pg-auth-postgresql.data.svc.cluster.local
+        port: 5432
+        dbname: auth
+        user: auth
+        passwd: auth
+        is_fast: false
+        connection_number: 4
+
+jwtKeys:
+  private: true
+  public: true
+  publicFile: jwt_public.jwk
+  mountPath: /etc/keys
+
+env:
+  - name: JWT_PRIVATE_KEY_PATH
+    value: /etc/keys/jwt_private.jwk
+  - name: JWT_PUBLIC_KEY_PATH
+    value: /etc/keys/jwt_public.jwk
+
+migrations:
+  enabled: true
+  image: postgres:16
+  files:
+    001_init.sql: |
+      CREATE TABLE IF NOT EXISTS users (
+          id            UUID PRIMARY KEY,
+          login         TEXT UNIQUE NOT NULL,
+          password_hash TEXT NOT NULL,
+          name          TEXT NOT NULL DEFAULT '',
+          created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS users_login_idx ON users(login);
+  db:
+    host: pg-auth-postgresql.data.svc.cluster.local
+    port: "5432"
+    name: auth
+    user: auth
+    password: auth
+
+ingress:
+  enabled: true
+  match: "PathPrefix(`/api/auth`)"
+
+cors:
+  enabled: true
+
+networkPolicy:
+  enabled: true
+
+healthcheck:
+  path: /health

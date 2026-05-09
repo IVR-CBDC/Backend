@@ -1,0 +1,43 @@
+http:
+  middlewares:
+    cors:
+      headers:
+        accessControlAllowOriginList: "*"
+        accessControlAllowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+        accessControlAllowHeaders: ["Authorization", "Content-Type"]
+        accessControlMaxAge: 600
+
+  routers:
+    auth:
+      rule: "PathPrefix(`/api/auth`)"
+      service: auth
+      middlewares: [cors]
+      entryPoints: [web]
+
+    core:
+      rule: "PathPrefix(`/api/core`)"
+      service: core
+      middlewares: [cors]
+      entryPoints: [web]
+
+    test-python:
+      rule: "PathPrefix(`/api/test-python`) || Path(`/health2`)"
+      service: test-python
+      middlewares: [cors]
+      entryPoints: [web]
+
+  services:
+    auth:
+      loadBalancer:
+        servers:
+          - url: "http://service-auth:8080"
+
+    core:
+      loadBalancer:
+        servers:
+          - url: "http://service-core:8080"
+
+    test-python:
+      loadBalancer:
+        servers:
+          - url: "http://service-test-python:8000"

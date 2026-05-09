@@ -1,0 +1,66 @@
+replicaCount: 1
+
+image:
+  repository: localhost:5000/service-core
+  tag: latest
+
+service:
+  port: 8080
+
+config:
+  enabled: true
+  json:
+    app:
+      threads_num: 4
+      log:
+        log_level: INFO
+    listeners:
+      - address: "0.0.0.0"
+        port: 8080
+        https: false
+    db_clients:
+      - name: default
+        rdbms: postgresql
+        host: pg-core-postgresql.data.svc.cluster.local
+        port: 5432
+        dbname: core
+        user: core
+        passwd: core
+        is_fast: false
+        connection_number: 8
+
+jwtKeys:
+  private: false
+  public: true
+  publicFile: jwt_public.jwk
+  mountPath: /etc/keys
+
+env:
+  - name: JWT_PUBLIC_KEY_PATH
+    value: /etc/keys/jwt_public.jwk
+
+migrations:
+  enabled: true
+  image: postgres:16
+  files:
+    001_init.sql: |
+      CREATE TABLE IF NOT EXISTS _placeholder (id SERIAL PRIMARY KEY);
+  db:
+    host: pg-core-postgresql.data.svc.cluster.local
+    port: "5432"
+    name: core
+    user: core
+    password: core
+
+ingress:
+  enabled: true
+  match: "PathPrefix(`/api/core`)"
+
+cors:
+  enabled: true
+
+networkPolicy:
+  enabled: true
+
+healthcheck:
+  path: /health

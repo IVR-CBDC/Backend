@@ -1,0 +1,51 @@
+replicaCount: 1
+
+image:
+  repository: localhost:5000/service
+  tag: latest
+  pullPolicy: Always
+
+service:
+  port: 8080
+
+env: []
+
+config:
+  enabled: false
+  json: {}
+
+jwtKeys:
+  private: false
+  public: false
+  publicFile: jwt_public.jwk
+  mountPath: /etc/keys
+
+migrations:
+  enabled: false
+  image: postgres:16
+  files: {}
+  db:
+    host: ""
+    port: "5432"
+    name: ""
+    user: ""
+    password: ""
+
+ingress:
+  enabled: false
+  match: ""
+
+cors:
+  enabled: false
+  allowOrigins: "*"
+  allowMethods: "GET,POST,PUT,DELETE,OPTIONS"
+  allowHeaders: "Authorization,Content-Type"
+  maxAge: 600
+
+networkPolicy:
+  enabled: false
+
+healthcheck:
+  path: /health
+  initialDelaySeconds: 5
+  periodSeconds: 10

@@ -1,0 +1,39 @@
+replicaCount: 1
+
+image:
+  repository: localhost:5000/service-test-python
+  tag: latest
+
+service:
+  port: 8000
+
+config:
+  enabled: false
+
+jwtKeys:
+  private: false
+  public: true
+  publicFile: jwt_public.pem
+  mountPath: /etc/keys
+
+env:
+  - name: PG_DSN
+    value: "postgresql+asyncpg://test_python:test_python@pg-test-python-postgresql.data.svc.cluster.local:5432/test_python"
+  - name: JWT_PUBLIC_KEY_PATH
+    value: /etc/keys/jwt_public.pem
+
+migrations:
+  enabled: false
+
+ingress:
+  enabled: true
+  match: "PathPrefix(`/api/test-python`) || Path(`/health2`)"
+
+cors:
+  enabled: false
+
+networkPolicy:
+  enabled: true
+
+healthcheck:
+  path: /health2

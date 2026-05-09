@@ -1,0 +1,13 @@
+infra/keys/*.pem
+infra/keys/*.jwk
+**/build/
+**/CMakeFiles/
+**/__pycache__/
+**/.venv/
+*.log
+.idea/
+.vscode/
+compile_commands.json
+.cache/
+.claude/
+cmake-build-debug/

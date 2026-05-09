@@ -1,0 +1,22 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "generic-service.fullname" . }}
+  labels:
+    {{- include "generic-service.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: {{ .Values.ingress.match }}
+      kind: Rule
+      services:
+        - name: {{ include "generic-service.fullname" . }}
+          namespace: {{ .Release.Namespace }}
+          port: {{ .Values.service.port }}
+      {{- if .Values.cors.enabled }}
+      middlewares:
+        - name: {{ include "generic-service.fullname" . }}-cors
+      {{- end }}
+{{- end }}

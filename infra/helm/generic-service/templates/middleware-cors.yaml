@@ -1,0 +1,21 @@
+{{- if .Values.cors.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "generic-service.fullname" . }}-cors
+  labels:
+    {{- include "generic-service.labels" . | nindent 4 }}
+spec:
+  headers:
+    accessControlAllowOriginList:
+      - {{ .Values.cors.allowOrigins | quote }}
+    accessControlAllowMethods:
+      {{- range (splitList "," .Values.cors.allowMethods) }}
+      - {{ . | trim | quote }}
+      {{- end }}
+    accessControlAllowHeaders:
+      {{- range (splitList "," .Values.cors.allowHeaders) }}
+      - {{ . | trim | quote }}
+      {{- end }}
+    accessControlMaxAge: {{ .Values.cors.maxAge }}
+{{- end }}

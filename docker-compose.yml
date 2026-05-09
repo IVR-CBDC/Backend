@@ -1,0 +1,170 @@
+networks:
+  backend-net:
+    driver: bridge
+
+volumes:
+  pg_auth_data:
+  pg_core_data:
+  pg_test_python_data:
+
+services:
+  # ============================================================
+  # Ingress
+  # ============================================================
+  traefik:
+    image: traefik:v2.10
+    command:
+      - --configFile=/etc/traefik/traefik.yml
+    ports:
+      - "80:80"
+      - "8081:8080"
+    volumes:
+      - ./infra/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./infra/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    networks: [backend-net]
+
+  # ============================================================
+  # Postgres (один на сервис)
+  # ============================================================
+  pg-auth:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: auth
+      POSTGRES_DB: auth
+    volumes:
+      - pg_auth_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth"]
+      interval: 2s
+      retries: 20
+    networks: [backend-net]
+
+  pg-core:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: core
+      POSTGRES_PASSWORD: core
+      POSTGRES_DB: core
+    volumes:
+      - pg_core_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U core"]
+      interval: 2s
+      retries: 20
+    networks: [backend-net]
+
+  pg-test-python:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: test_python
+      POSTGRES_PASSWORD: test_python
+      POSTGRES_DB: test_python
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_python"]
+      interval: 2s
+      retries: 20
+    volumes:
+      - pg_test_python_data:/var/lib/postgresql/data
+    networks: [backend-net]
+
+  # ============================================================
+  # Общий Redis (с префиксами на стороне приложений)
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 20
+    networks: [backend-net]
+
+  # ============================================================
+  # Миграции (init-контейнеры)
+  # ============================================================
+  migrate-auth:
+    image: postgres:16-alpine
+    entrypoint: ["/bin/sh", "/app/migrate.sh"]
+    volumes:
+      - ./infra/migrate.sh:/app/migrate.sh:ro
+      - ./services/service-auth/migrations:/app/migrations:ro
+    environment:
+      DB_HOST: pg-auth
+      DB_PORT: "5432"
+      DB_NAME: auth
+      DB_USER: auth
+      DB_PASSWORD: auth
+    depends_on:
+      pg-auth: { condition: service_healthy }
+    networks: [backend-net]
+
+  migrate-core:
+    image: postgres:16-alpine
+    entrypoint: ["/bin/sh", "/app/migrate.sh"]
+    volumes:
+      - ./infra/migrate.sh:/app/migrate.sh:ro
+      - ./services/service-core/migrations:/app/migrations:ro
+    environment:
+      DB_HOST: pg-core
+      DB_PORT: "5432"
+      DB_NAME: core
+      DB_USER: core
+      DB_PASSWORD: core
+    depends_on:
+      pg-core: { condition: service_healthy }
+    networks: [backend-net]
+
+  # ============================================================
+  # Сервисы
+  # ============================================================
+  service-auth:
+    build:
+      context: .
+      dockerfile: services/service-auth/Dockerfile
+    environment:
+      DB_HOST: pg-auth
+      DB_PORT: "5432"
+      DB_NAME: auth
+      DB_USER: auth
+      DB_PASSWORD: auth
+      SERVICE_PORT: "8080"
+      JWT_PRIVATE_KEY_PATH: /etc/keys/jwt_private.jwk
+      JWT_PUBLIC_KEY_PATH: /etc/keys/jwt_public.jwk
+    volumes:
+      - ./infra/keys:/etc/keys:ro
+    depends_on:
+      migrate-auth: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    networks: [backend-net]
+
+  service-core:
+    build:
+      context: .
+      dockerfile: services/service-core/Dockerfile
+    environment:
+      DB_HOST: pg-core
+      DB_PORT: "5432"
+      DB_NAME: core
+      DB_USER: core
+      DB_PASSWORD: core
+      SERVICE_PORT: "8080"
+      JWT_PUBLIC_KEY_PATH: /etc/keys/jwt_public.jwk
+    volumes:
+      - ./infra/keys/jwt_public.jwk:/etc/keys/jwt_public.jwk:ro
+    depends_on:
+      migrate-core: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    networks: [backend-net]
+
+  service-test-python:
+    build:
+      context: .
+      dockerfile: services/service-test-python/Dockerfile
+    environment:
+      JWT_PUBLIC_KEY_PATH: /etc/service-test-python/jwt_public.pem
+      PG_DSN: "postgresql+asyncpg://test_python:test_python@pg-test-python:5432/test_python"
+    volumes:
+      - ./infra/keys/jwt_public.pem:/etc/service-test-python/jwt_public.pem:ro
+    depends_on:
+      pg-test-python: { condition: service_healthy }
+    networks: [backend-net]

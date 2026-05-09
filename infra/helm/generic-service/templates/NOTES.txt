@@ -1,0 +1,9 @@
+{{ include "generic-service.fullname" . }} deployed!
+
+Service: {{ include "generic-service.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+{{- if .Values.ingress.enabled }}
+Ingress: {{ .Values.ingress.match }}
+{{- end }}
+
+Healthcheck: {{ .Values.healthcheck.path }}
