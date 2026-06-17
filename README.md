@@ -37,6 +37,7 @@ make up        # собирает и запускает всё
 ```
 
 Регистрация и логин:
+
 ```bash
 make test-register
 make test-login    # копируешь token из ответа
