@@ -23,7 +23,6 @@ def calculate_commission(corridor, amount: float) -> dict:
     percentage_amount = amount * percentage_fee
     total = base_fee + percentage_amount + fixed_fee
 
-
     if total < min_fee:
         total = min_fee
     if total > max_fee:

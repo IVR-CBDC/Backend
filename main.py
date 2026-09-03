@@ -2,11 +2,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from calculator import load_corridors, find_corridor, calculate_commission
 
-# Создаём приложение
 app = FastAPI(title="Commission Calculation Service")
 
 corridors_df = load_corridors()
-
 class PaymentRequest(BaseModel):
     from_country: str
     to_country: str
@@ -16,7 +14,6 @@ class PaymentRequest(BaseModel):
 @app.post("/calculate")
 def calculate(request: PaymentRequest):
 
-    # Валидация V-1: страны не должны совпадать
     if request.from_country == request.to_country:
         raise HTTPException(status_code=400, detail="SAME_COUNTRY")
 
