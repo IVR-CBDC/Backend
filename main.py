@@ -41,3 +41,4 @@ def calculate(request: PaymentRequest):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
