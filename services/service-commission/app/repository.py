@@ -1,9 +1,12 @@
+import logging
 from typing import Protocol
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.domain import Corridor, ScenarioProfile
+
+logger = logging.getLogger(__name__)
 
 
 class CorridorRepository(Protocol):
@@ -68,4 +71,5 @@ class PgCorridorRepository:
                 await conn.execute(text("SELECT 1"))
             return True
         except Exception:
+            logger.warning("postgres ping failed", exc_info=True)
             return False
