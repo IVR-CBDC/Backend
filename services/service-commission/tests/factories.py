@@ -57,3 +57,25 @@ def corridor(corridor_id: str) -> Corridor:
 
 def profile(scenario: str) -> ScenarioProfile:
     return next(p for p in PROFILES if p.scenario == scenario)
+
+
+class FakeRepository:
+    def __init__(
+        self,
+        corridors: list[Corridor] | None = None,
+        profiles: list[ScenarioProfile] | None = None,
+        healthy: bool = True,
+    ) -> None:
+        self._corridors = CORRIDORS if corridors is None else corridors
+        self._profiles = PROFILES if profiles is None else profiles
+        self._healthy = healthy
+
+    async def find_corridor(self, from_country: str, to_country: str, currency: str) -> Corridor | None:
+        key = (from_country, to_country, currency)
+        return next((c for c in self._corridors if (c.from_country, c.to_country, c.currency) == key), None)
+
+    async def list_profiles(self) -> list[ScenarioProfile]:
+        return list(self._profiles)
+
+    async def ping(self) -> bool:
+        return self._healthy
