@@ -1,4 +1,4 @@
-.PHONY: keys up down logs test-register test-login test-core test-test-python lsp openapi \
+.PHONY: keys up down logs test-register test-login test-core test-test-python test-commission test-commission-db lsp openapi \
        new-cpp new-python k3s-install k3s-import-images k3s-setup \
        k3s-build k3s-deploy k3s-deploy-data up-k3s down-k3s k3s-status \
        k3s-test-health k3s-test-auth k3s-test-core
@@ -40,6 +40,16 @@ test-core:
 		-H "Authorization: Bearer $$TOKEN" \
 		-H 'Content-Type: application/json' \
 		-d '{"n": 100}' | jq
+
+test-commission:
+	cd services/service-commission && uv run pytest -q -m "not db"
+
+test-commission-db:
+	docker compose up -d pg-commission migrate-commission
+	docker compose wait migrate-commission
+	cd services/service-commission && \
+		TEST_PG_DSN=postgresql+asyncpg://commission:commission@127.0.0.1:5434/commission \
+		uv run pytest -q -m db
 
 test-test-python:
 	@if [ -z "$$TOKEN" ]; then echo "set TOKEN=..."; exit 1; fi

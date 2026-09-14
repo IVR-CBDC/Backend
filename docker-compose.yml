@@ -1,3 +1,5 @@
+name: ivr
+
 networks:
   backend-net:
     driver: bridge
@@ -6,6 +8,7 @@ volumes:
   pg_auth_data:
   pg_core_data:
   pg_test_python_data:
+  pg_commission_data:
 
 services:
   # ============================================================
@@ -68,6 +71,22 @@ services:
       - pg_test_python_data:/var/lib/postgresql/data
     networks: [backend-net]
 
+  pg-commission:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: commission
+      POSTGRES_PASSWORD: commission
+      POSTGRES_DB: commission
+    ports:
+      - "127.0.0.1:5434:5432"   # только для локальных db-тестов
+    volumes:
+      - pg_commission_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U commission"]
+      interval: 2s
+      retries: 20
+    networks: [backend-net]
+
   # ============================================================
   # Общий Redis (с префиксами на стороне приложений)
   # ============================================================
@@ -112,6 +131,22 @@ services:
       DB_PASSWORD: core
     depends_on:
       pg-core: { condition: service_healthy }
+    networks: [backend-net]
+
+  migrate-commission:
+    image: postgres:16-alpine
+    entrypoint: ["/bin/sh", "/app/migrate.sh"]
+    volumes:
+      - ./infra/migrate.sh:/app/migrate.sh:ro
+      - ./services/service-commission/migrations:/app/migrations:ro
+    environment:
+      DB_HOST: pg-commission
+      DB_PORT: "5432"
+      DB_NAME: commission
+      DB_USER: commission
+      DB_PASSWORD: commission
+    depends_on:
+      pg-commission: { condition: service_healthy }
     networks: [backend-net]
 
   # ============================================================
