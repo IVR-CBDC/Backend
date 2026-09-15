@@ -1,39 +1,17 @@
-# Commission Calculation Service
+# service-commission
 
-Микросервис для расчёта комиссии трансграничных платежей 
+Расчёт комиссии трансграничных платежей и котировки сценариев расчёта (ЦВЦБ, банковский перевод,
+смарт-контракт, торговое финансирование). Внутренний сервис платформы, наружу не публикуется.
 
-## Что делает сервис
+Формула: `clamp(base_fee + amount × percentage_fee + fixed_fee, min_fee, max_fee) × multiplier сценария`.
 
-- Принимает параметры перевода (страна отправителя, страна получателя, валюта, сумма)
-- Сам определяет валютный коридор
-- Рассчитывает комиссию по данной формуле: `base_fee + (amount × percentage_fee) + fixed_fee`
-- Возвращает детальный breakdown комиссии
-
-## Запускается сервис через Docker Compose
+| Метод | Путь | |
+|---|---|---|
+| GET | `/health` | без JWT |
+| POST | `/api/commission/calculate` | комиссия по коридору (контракт ivrpy) |
+| POST | `/api/commission/quotes` | 4 котировки; недоступные — с причиной |
 
 ```bash
-docker compose up
-
+make test-commission       # unit + API
+make test-commission-db    # репозиторий против Postgres с миграциями
 ```
-## После запуска откройте в браузере http://localhost:8000/docs
-
-## Пример запроса и ответа: 
-
-## Запрос:
-{
-  "from_country": "RU",
-  "to_country": "CN",
-  "currency": "CNY",
-  "amount": 100000
-}
-
-## Ответ:
-{
-  "corridor_id": "RU-CN-CNY",
-  "base_fee": 50.0,
-  "percentage_fee": 0.015,
-  "percentage_amount": 1500.0,
-  "fixed_fee": 25.0,
-  "total_commission": 1575.0
-}
-

@@ -7,7 +7,6 @@ networks:
 volumes:
   pg_auth_data:
   pg_core_data:
-  pg_test_python_data:
   pg_commission_data:
 
 services:
@@ -55,20 +54,6 @@ services:
       test: ["CMD-SHELL", "pg_isready -U core"]
       interval: 2s
       retries: 20
-    networks: [backend-net]
-
-  pg-test-python:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: test_python
-      POSTGRES_PASSWORD: test_python
-      POSTGRES_DB: test_python
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U test_python"]
-      interval: 2s
-      retries: 20
-    volumes:
-      - pg_test_python_data:/var/lib/postgresql/data
     networks: [backend-net]
 
   pg-commission:
@@ -191,15 +176,19 @@ services:
       redis: { condition: service_healthy }
     networks: [backend-net]
 
-  service-test-python:
+  service-commission:
     build:
       context: .
-      dockerfile: services/service-test-python/Dockerfile
+      dockerfile: services/service-commission/Dockerfile
     environment:
-      JWT_PUBLIC_KEY_PATH: /etc/service-test-python/jwt_public.pem
-      PG_DSN: "postgresql+asyncpg://test_python:test_python@pg-test-python:5432/test_python"
+      PG_DSN: "postgresql+asyncpg://commission:commission@pg-commission:5432/commission"
+      JWT_PUBLIC_KEY_PATH: /etc/keys/jwt_public.pem
     volumes:
-      - ./infra/keys/jwt_public.pem:/etc/service-test-python/jwt_public.pem:ro
+      - ./infra/keys/jwt_public.pem:/etc/keys/jwt_public.pem:ro
     depends_on:
-      pg-test-python: { condition: service_healthy }
+      migrate-commission: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      retries: 20
     networks: [backend-net]

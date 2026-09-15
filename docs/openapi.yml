@@ -229,10 +229,9 @@ paths:
                 required:
                   - error
 
-  /health2:
-    get:
-      summary: "Health2"
-      description: "Health check с проверкой БД."
+  /api/commission/calculate:
+    post:
+      summary: "Комиссия по коридору (совместимо с ivrpy)"
       responses:
         "200":
           description: "Successful Response"
@@ -240,26 +239,26 @@ paths:
             application/json:
               schema:
                 type: object
-
-  /api/test-python/ping:
-    get:
-      summary: "Ping"
-      description: "Защищённая ручка — пример как использовать JWT-авторизацию."
-      responses:
-        "200":
-          description: "Successful Response"
+        "422":
+          description: "Validation Error"
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  user_id:
-                    type: string
-                  message:
-                    type: string
-                required:
-                  - user_id
-                  - message
+                  detail:
+                    type: array
+
+  /api/commission/quotes:
+    post:
+      summary: "Котировки по всем сценариям расчёта"
+      responses:
+        "200":
+          description: "Successful Response"
+          content:
+            application/json:
+              schema:
+                type: object
         "422":
           description: "Validation Error"
           content:

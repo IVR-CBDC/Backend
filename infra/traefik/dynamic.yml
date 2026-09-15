@@ -20,12 +20,6 @@ http:
       middlewares: [cors]
       entryPoints: [web]
 
-    test-python:
-      rule: "PathPrefix(`/api/test-python`) || Path(`/health2`)"
-      service: test-python
-      middlewares: [cors]
-      entryPoints: [web]
-
   services:
     auth:
       loadBalancer:
@@ -37,7 +31,3 @@ http:
         servers:
           - url: "http://service-core:8080"
 
-    test-python:
-      loadBalancer:
-        servers:
-          - url: "http://service-test-python:8000"

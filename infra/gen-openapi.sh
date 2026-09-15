@@ -14,7 +14,7 @@ HEADERS=(
   services/service-core/include/core_controller.h
 )
 
-FASTAPI_APP="services/service-test-python/app"
+FASTAPI_APP="services/service-commission"
 
 
 to_oapi_type() {
@@ -197,50 +197,13 @@ generate_cpp_paths() {
 
 generate_fastapi_paths() {
   local json_spec=""
-
-  # 1) Пробуем из запущенного контейнера
-  json_spec="$(docker compose exec -T service-test-python \
-    python3 -c 'from main import app; import json; print(json.dumps(app.openapi()))' \
+  json_spec="$(cd "${FASTAPI_APP}" && uv run --quiet python -c \
+    'import json; from app.main import create_app; print(json.dumps(create_app(None, b"").openapi()))' \
     2>/dev/null)" || true
 
-  # 2) Fallback: локальный Python с мок-зависимостями (для CI)
   if [[ -z "$json_spec" ]]; then
-    json_spec="$(python3 -c "
-import sys, types, os, json
-
-for mod in ('asyncpg', 'asyncpg.pool'):
-    sys.modules[mod] = types.ModuleType(mod)
-
-import sqlalchemy.ext.asyncio as _aio
-_orig_create = _aio.create_async_engine
-def _fake_engine(*a, **kw):
-    class FakeEngine:
-        pass
-    return FakeEngine()
-_aio.create_async_engine = _fake_engine
-
-_aio.async_sessionmaker = lambda *a, **kw: None
-
-os.environ['JWT_PUBLIC_KEY_PATH'] = '/dev/null'
-import builtins, io
-_orig_open = builtins.open
-def _patched_open(path, *a, **kw):
-    if 'jwt' in str(path).lower() or str(path) == '/dev/null':
-        return io.BytesIO(b'fake-key-for-openapi-gen')
-    return _orig_open(path, *a, **kw)
-builtins.open = _patched_open
-
-sys.path.insert(0, '${FASTAPI_APP}')
-from main import app
-builtins.open = _orig_open
-
-print(json.dumps(app.openapi()))
-" 2>/dev/null)" || true
-  fi
-
-  if [[ -z "$json_spec" ]]; then
-    echo "  # service-test-python: не удалось извлечь OpenAPI" >&2
-    echo "  # (нужен запущенный контейнер или python3 + fastapi + pydantic)" >&2
+    echo "  # service-commission: не удалось извлечь OpenAPI" >&2
+    echo "  # (нужен uv и зависимости services/service-commission)" >&2
     return
   fi
 
@@ -330,13 +293,13 @@ HEADER
   if [[ -n "$fastapi_out" ]]; then
     echo "$fastapi_out"
   else
-    echo "  # service-test-python: не удалось извлечь OpenAPI (нужен python3 + fastapi)"
+    echo "  # service-commission: не удалось извлечь OpenAPI (нужен python3 + fastapi)"
   fi
 
 } > "$OUT"
 
 cpp_count="${#ENDPOINTS[@]}"
-py_count="$(grep -c '^  /api/test-python\|^  /health2' "$OUT" 2>/dev/null || true)"
+py_count="$(grep -c '^  /api/commission' "$OUT" 2>/dev/null || true)"
 py_count="${py_count:-0}"
 total=$(( cpp_count + py_count ))
 

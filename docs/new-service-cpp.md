@@ -302,7 +302,7 @@ healthcheck:
 
 В `K3S_SERVICES` добавь имя:
 ```makefile
-K3S_SERVICES := service-auth service-core service-test-python service-<name>
+K3S_SERVICES := service-auth service-core service-commission service-<name>
 ```
 
 В `k3s-deploy-data` добавь PG:

@@ -1,4 +1,4 @@
-.PHONY: keys up down logs test-register test-login test-core test-test-python test-commission test-commission-db lsp openapi \
+.PHONY: keys up down logs test-register test-login test-core smoke-commission test-commission test-commission-db lsp openapi \
        new-cpp new-python k3s-install k3s-import-images k3s-setup \
        k3s-build k3s-deploy k3s-deploy-data up-k3s down-k3s k3s-status \
        k3s-test-health k3s-test-auth k3s-test-core
@@ -12,15 +12,14 @@ up: keys
 	@echo "Up:"
 	@echo "  http://localhost/api/auth/...        -> service-auth"
 	@echo "  http://localhost/api/core/...        -> service-core"
-	@echo "  http://localhost/api/test-python/...  -> service-test-python"
-	@echo "  http://localhost/health2             -> service-test-python health"
+	@echo "  service-commission                   -> только внутри сети (make smoke-commission)"
 	@echo "  http://localhost:8081                -> traefik dashboard"
 
 down:
 	docker compose down -v
 
 logs:
-	docker compose logs -f service-auth service-core service-test-python
+	docker compose logs -f service-auth service-core service-commission
 
 # === Smoke tests ===
 
@@ -51,13 +50,12 @@ test-commission-db:
 		TEST_PG_DSN=postgresql+asyncpg://commission:commission@127.0.0.1:5434/commission \
 		uv run pytest -q -m db
 
-test-test-python:
+smoke-commission:
 	@if [ -z "$$TOKEN" ]; then echo "set TOKEN=..."; exit 1; fi
-	curl -s http://localhost/api/test-python/ping \
-		-H "Authorization: Bearer $$TOKEN" | jq
-
-test-health2:
-	curl -s http://localhost/health2 | jq
+	docker run --rm --network ivr_backend-net curlimages/curl:8.10.1 -s \
+		-X POST http://service-commission:8000/api/commission/quotes \
+		-H "Authorization: Bearer $$TOKEN" -H 'Content-Type: application/json' \
+		-d '{"from_country":"RU","to_country":"CN","currency":"CNY","amount":100000}'
 
 lsp:
 	cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

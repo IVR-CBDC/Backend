@@ -1,6 +1,6 @@
 # backend-platform
 
-Микросервисная платформа: 3 независимых сервиса за общим ingress, каждый со своей БД, объединённый через JWT.
+Микросервисная платформа Alfa Global CBDC Hub: сервисы за общим ingress, каждый со своей БД, объединённые через JWT.
 
 ## Архитектура
 
@@ -9,14 +9,14 @@
 [Frontend] ──HTTP──>        │  Traefik (Ingress)           │
                             │  один URL, разные пути       │
                             └──┬─────────┬─────────┬───────┘
-              /api/auth/*  ────┘         │         └──── /api/test-python/*
+              /api/auth/*  ────┘         │         └──── (внутр.)
                                 /api/core/*
                   │                      │                      │
         ┌─────────▼────────┐  ┌──────────▼──────────┐  ┌────────▼──────────┐
-        │  service-auth    │  │  service-core       │  │  service-test-python│
+        │  service-auth    │  │  service-core       │  │  service-commission │
         │  C++ / Drogon    │  │  C++ / Drogon       │  │  Python/FastAPI   │
-        │  пишет: ты       │  │  пишет: ты          │  │  пишет: напарница │
-        │  pg-auth         │  │  pg-core            │  │  pg-test-python     │
+        │  пишет: ты       │  │  пишет: ты          │  │  комиссии/котировки │
+        │  pg-auth         │  │  pg-core            │  │  pg-commission      │
         │  ВЫПУСКАЕТ JWT   │  │  ВАЛИДИРУЕТ JWT     │  │  ВАЛИДИРУЕТ JWT   │
         │  (приват. ключ)  │  │  (публ. ключ)       │  │  (публ. ключ)     │
         └──────────────────┘  └─────────────────────┘  └───────────────────┘
@@ -44,8 +44,7 @@ make test-login    # копируешь token из ответа
 
 export TOKEN=<твой токен>
 make test-core
-make test-test-python
-make test-health2
+make smoke-commission
 ```
 
 ## Структура
@@ -62,7 +61,7 @@ backend-platform/
 ├── services/
 │   ├── service-auth/                 # C++/Drogon, выпускает JWT
 │   ├── service-core/                 # C++/Drogon, валидирует JWT
-│   └── service-test-python/            # Python/FastAPI, валидирует JWT
+│   └── service-commission/           # Python/FastAPI, комиссии и котировки, валидирует JWT
 └── docs/
     └── jwt-contract.md               # формат JWT — единственный общий контракт
 ```
@@ -79,25 +78,19 @@ backend-platform/
 То же что в auth, но с `"core_svc::JwtFilter"` в `ADD_METHOD_TO` если нужна авторизация.
 `user_id` берёшь из `req->attributes()->get<std::string>("user_id")`.
 
-### В service-test-python (Python)
+### В service-commission (Python)
 
-```python
-@app.get("/api/test-python/новая-ручка")
-async def новая(
-    user_id: Annotated[str, Depends(require_user)],   # если нужен auth
-    session: Annotated[AsyncSession, Depends(get_db)], # если нужна БД
-):
-    ...
-```
+Логика — чистые функции в `app/domain.py` (тесты в `tests/test_domain.py`), доступ к БД — `app/repository.py`,
+ручки — `app/api.py` внутри `create_router`. Авторизация — зависимость `User` (JWT, возвращает `sub`).
+Миграции — `migrations/NNN_*.sql`. Тесты: `make test-commission` и `make test-commission-db`.
 
 ## Что НЕ сделано (специально, для следующих итераций)
 
 - `service-auth/me` парсит JWT — пока заглушка, нужно использовать тот же verifier что в service-core
 - Метрики Prometheus (`/metrics`)
 - Structured logging (slog-style)
-- Тесты (Catch2 для C++, pytest для Python)
+- Тесты Catch2 для C++
 - mTLS между сервисами (на случай когда они таки начнут общаться)
-- Alembic migrations для test-python (сейчас просто заглушка БД)
 - k3s манифесты (Deployment, Service, Ingress, StatefulSet для Postgres)
 - HTTPS на Traefik с Let's Encrypt
 - JWKS endpoint вместо файлового ключа (для ротации без передеплоя)
