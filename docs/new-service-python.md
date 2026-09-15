@@ -8,6 +8,8 @@ services/service-<name>/
   Dockerfile
   app/
     main.py
+  migrations/
+    001_init.sql          # (опционально)
 ```
 
 ## 2. pyproject.toml
@@ -191,13 +193,6 @@ env:
 migrations:
   enabled: true
   image: postgres:16
-  files:
-    001_init.sql: |
-      CREATE TABLE IF NOT EXISTS items (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          owner_id UUID NOT NULL,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
   db:
     host: pg-<name>-postgresql.data.svc.cluster.local
     port: "5432"
@@ -218,6 +213,12 @@ networkPolicy:
 healthcheck:
   path: /health
 ```
+
+Миграции живут в `services/service-<name>/migrations/NNN_*.sql` — это единственный источник
+правды, values содержат только `migrations.enabled/image/db`. `bash infra/gen-migration-values.sh
+service-<name>` генерирует `infra/helm/generated/migrations-service-<name>.yaml` из этих файлов;
+Makefile (`k3s-deploy-%`) и `.github/workflows/deploy.yml` передают его как дополнительный `-f`
+при `helm upgrade`.
 
 ## 6. Регистрация в Makefile
 

@@ -271,12 +271,6 @@ env:
 migrations:
   enabled: true        # false если нет миграций
   image: postgres:16
-  files:
-    001_init.sql: |
-      CREATE TABLE IF NOT EXISTS my_table (
-          id UUID PRIMARY KEY,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
   db:
     host: pg-<name>-postgresql.data.svc.cluster.local
     port: "5432"
@@ -297,6 +291,12 @@ networkPolicy:
 healthcheck:
   path: /health
 ```
+
+Миграции живут в `services/service-<name>/migrations/NNN_*.sql` — это единственный источник
+правды, values содержат только `migrations.enabled/image/db`. `bash infra/gen-migration-values.sh
+service-<name>` генерирует `infra/helm/generated/migrations-service-<name>.yaml` из этих файлов;
+Makefile (`k3s-deploy-%`) и `.github/workflows/deploy.yml` передают его как дополнительный `-f`
+при `helm upgrade`.
 
 ## 10. Регистрация в Makefile
 
