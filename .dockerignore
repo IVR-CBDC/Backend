@@ -1,0 +1,9 @@
+**/.venv
+**/__pycache__
+**/*.egg-info
+**/cmake-build-debug
+**/build
+.git
+.idea
+.superpowers
+infra/keys/*private*

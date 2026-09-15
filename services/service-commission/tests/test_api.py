@@ -1,7 +1,9 @@
+import logging
+
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from tests.factories import FakeRepository
+from tests.factories import PROFILES, FakeRepository
 
 
 def transfer(**overrides):
@@ -69,6 +71,11 @@ class TestCalculate:
         assert body["error"] == "Некорректные параметры запроса"
         assert body["details"][0]["loc"] == ["body", "from_country"]
 
+    def test_amount_with_more_than_two_decimal_places_is_rejected(self, client, auth_headers):
+        response = client.post(self.URL, json=transfer(amount="100000.123"), headers=auth_headers)
+        assert response.status_code == 422
+        assert response.json()["code"] == "VALIDATION_ERROR"
+
 
 class TestQuotes:
     URL = "/api/commission/quotes"
@@ -117,6 +124,14 @@ class TestQuotes:
         response = client.post(self.URL, json=transfer(to_country="RU"), headers=auth_headers)
         assert response.status_code == 400
         assert response.json()["code"] == "SAME_COUNTRY"
+
+    def test_missing_scenario_profile_is_logged(self, rsa_keys, auth_headers, caplog):
+        client = TestClient(create_app(FakeRepository(profiles=PROFILES[:3]), rsa_keys[1]))
+        with caplog.at_level(logging.ERROR):
+            response = client.post(self.URL, json=transfer(), headers=auth_headers)
+        assert response.status_code == 200
+        assert len(response.json()["quotes"]) == 3
+        assert any("scenario profile missing" in record.message for record in caplog.records)
 
 
 class TestHealth:

@@ -23,7 +23,13 @@ def create_app(repo: CorridorRepository, jwt_public_key: bytes, lifespan: Lifesp
 
 def build_default_app() -> FastAPI:
     settings = Settings.from_env()
-    engine = create_async_engine(settings.pg_dsn, pool_size=5, max_overflow=10, pool_pre_ping=True)
+    engine = create_async_engine(
+        settings.pg_dsn,
+        pool_size=5,
+        max_overflow=10,
+        pool_pre_ping=True,
+        connect_args={"timeout": 3, "command_timeout": 5},
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

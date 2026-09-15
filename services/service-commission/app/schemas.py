@@ -1,19 +1,20 @@
 from decimal import Decimal
 from typing import Annotated, Any
 
-from pydantic import BaseModel, StringConstraints, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from app.domain import Commission, Corridor, Quote
 
-CountryCode = Annotated[str, StringConstraints(strip_whitespace=True, to_upper=True, pattern=r"^[A-Z]{2}$")]
-CurrencyCode = Annotated[str, StringConstraints(strip_whitespace=True, to_upper=True, pattern=r"^[A-Z]{3}$")]
+CountryCode = Annotated[str, StringConstraints(pattern=r"^[A-Z]{2}$")]
+CurrencyCode = Annotated[str, StringConstraints(pattern=r"^[A-Z]{3}$")]
+Amount = Annotated[Decimal, Field(decimal_places=2)]
 
 
 class TransferRequest(BaseModel):
     from_country: CountryCode
     to_country: CountryCode
     currency: CurrencyCode
-    amount: Decimal
+    amount: Amount
 
     @field_validator("from_country", "to_country", "currency", mode="before")
     @classmethod

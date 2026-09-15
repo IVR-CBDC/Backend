@@ -15,3 +15,10 @@
 make test-commission       # unit + API
 make test-commission-db    # репозиторий против Postgres с миграциями
 ```
+
+## Изменения контракта относительно ivrpy
+
+- Путь: `/calculate` → `/api/commission/calculate`.
+- Формат ошибок: `{"detail": "CODE"}` → `{"code": "CODE", "error": "человеко-читаемое сообщение"}`.
+- Требуется JWT (`Authorization: Bearer ...`), которого не было в ivrpy.
+- `/api/commission/quotes` — новая ручка, которой в ivrpy не было (котировки по 4 сценариям расчёта).
