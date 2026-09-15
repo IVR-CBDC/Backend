@@ -124,7 +124,7 @@ jobs:
             cd ~/deploy-ivr/infra/helm
             
             # Auth
-            helm upgrade --install service-auth ./generic-service \
+            helm upgrade --install service-auth ./generic-service --wait --timeout 5m \
               -f values-service-auth.yaml \
               -f generated/migrations-service-auth.yaml \
               --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_AUTH }} \
@@ -133,7 +133,7 @@ jobs:
               -n backend
 
             # Core
-            helm upgrade --install service-core ./generic-service \
+            helm upgrade --install service-core ./generic-service --wait --timeout 5m \
               -f values-service-core.yaml \
               -f generated/migrations-service-core.yaml \
               --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CORE }} \
@@ -142,7 +142,7 @@ jobs:
               -n backend
 
             # Commission
-            helm upgrade --install service-commission ./generic-service \
+            helm upgrade --install service-commission ./generic-service --wait --timeout 5m \
               -f values-service-commission.yaml \
               -f generated/migrations-service-commission.yaml \
               --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_COMMISSION }} \

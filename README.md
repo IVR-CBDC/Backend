@@ -97,6 +97,20 @@ backend-platform/
 - Rate limiting на Traefik
 - CORS — нужен будет когда фронт появится
 
+## Миграция k3s: test-python → commission (один раз перед мержем в main)
+
+Пилотный сервис `service-test-python`/`pg-test-python` заменяется на `service-commission`.
+CD не устанавливает `pg-commission` и не удаляет старые релизы сам — перед мержем PR с
+service-commission в `main` выполнить руками на k3s-сервере:
+
+```bash
+helm upgrade --install pg-commission oci://registry-1.docker.io/bitnamicharts/postgresql -n data \
+  --set auth.username=commission --set auth.password=commission --set auth.database=commission \
+  --set primary.persistence.size=1Gi
+helm uninstall service-test-python -n backend
+helm uninstall pg-test-python -n data
+```
+
 ## Переход на k3s
 
 Когда будешь готов:
