@@ -1,5 +1,8 @@
 import pytest
 
+from app.main import create_app
+from tests.factories import FakeRepository
+
 BODY = {"from_country": "RU", "to_country": "CN", "currency": "CNY", "amount": 100000}
 URL = "/api/commission/quotes"
 
@@ -15,9 +18,19 @@ def test_missing_token(client):
 
 
 def test_expired_token(client, make_token):
-    response = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {make_token(ttl=-10)}"})
+    response = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {make_token(ttl=-120)}"})
     assert response.status_code == 401
     assert response.json()["code"] == "TOKEN_EXPIRED"
+
+
+def test_token_expired_within_leeway_is_still_accepted(client, make_token):
+    response = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {make_token(ttl=-10)}"})
+    assert response.status_code == 200
+
+
+def test_lowercase_bearer_scheme_is_accepted(client, make_token):
+    response = client.post(URL, json=BODY, headers={"Authorization": f"bearer {make_token()}"})
+    assert response.status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -40,3 +53,8 @@ def test_token_signed_by_foreign_key(client, make_token, foreign_private_key):
 
 def test_health_does_not_require_token(client):
     assert client.get("/health").status_code == 200
+
+
+def test_broken_public_key_fails_at_construction():
+    with pytest.raises(ValueError):
+        create_app(FakeRepository(), b"garbage")

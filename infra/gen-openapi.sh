@@ -198,7 +198,14 @@ generate_cpp_paths() {
 generate_fastapi_paths() {
   local json_spec=""
   json_spec="$(cd "${FASTAPI_APP}" && uv run --quiet python -c \
-    'import json; from app.main import create_app; print(json.dumps(create_app(None, b"").openapi()))' \
+    'import json
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from app.main import create_app
+pem = rsa.generate_private_key(public_exponent=65537, key_size=2048).public_key().public_bytes(
+    serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+)
+print(json.dumps(create_app(None, pem).openapi()))' \
     2>/dev/null)" || true
 
   if [[ -z "$json_spec" ]]; then
