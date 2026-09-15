@@ -13,6 +13,10 @@ spec:
     metadata:
       labels:
         {{- include "generic-service.selectorLabels" . | nindent 8 }}
+      {{- if .Values.migrations.enabled }}
+      annotations:
+        checksum/migrations: {{ include (print $.Template.BasePath "/migrations-configmap.yaml") . | sha256sum }}
+      {{- end }}
     spec:
       {{- if .Values.imagePullSecrets }}
       imagePullSecrets:
