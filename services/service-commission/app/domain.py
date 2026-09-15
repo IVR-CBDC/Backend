@@ -59,6 +59,8 @@ class Commission:
     percentage_fee: Decimal
     percentage_amount: Decimal
     fixed_fee: Decimal
+    subtotal: Decimal
+    clamped: str | None
     multiplier: Decimal
     total: Decimal
 
@@ -95,14 +97,22 @@ def corridor_limit_error(corridor: Corridor, amount: Decimal) -> DomainError | N
 def calculate_commission(corridor: Corridor, amount: Decimal, multiplier: Decimal = Decimal("1")) -> Commission:
     percentage_amount = amount * corridor.percentage_fee
     raw_total = corridor.base_fee + percentage_amount + corridor.fixed_fee
-    clamped = min(max(raw_total, corridor.min_fee), corridor.max_fee)
+    clamped_value = min(max(raw_total, corridor.min_fee), corridor.max_fee)
+    if clamped_value > raw_total:
+        clamped = "min"
+    elif clamped_value < raw_total:
+        clamped = "max"
+    else:
+        clamped = None
     return Commission(
         base_fee=corridor.base_fee,
         percentage_fee=corridor.percentage_fee,
         percentage_amount=money(percentage_amount),
         fixed_fee=corridor.fixed_fee,
+        subtotal=money(clamped_value),
+        clamped=clamped,
         multiplier=multiplier,
-        total=money(clamped * multiplier),
+        total=money(clamped_value * multiplier),
     )
 
 

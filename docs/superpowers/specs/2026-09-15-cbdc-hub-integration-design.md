@@ -241,7 +241,9 @@ API:
 
 `Quote = {scenario, title, description, eta_label, limitations[], available: bool,
 unavailable_reason: str|null, commission: {base_fee, percentage_fee, percentage_amount,
-fixed_fee, multiplier, total} | null}`. Нет коридора → все 4 `available=false` с причиной
+fixed_fee, subtotal, clamped, multiplier, total} | null}` (`subtotal` — сумма после
+клампа min/max fee, но до умножения на multiplier сценария; `clamped` — `"min"` / `"max"` /
+`null`, если сработал клампинг). Нет коридора → все 4 `available=false` с причиной
 «Коридор RU→US в USD не поддерживается», а не 404 — экран всё равно рисуется.
 
 ## 6. BFF (`Frontend/bff`)

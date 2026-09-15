@@ -20,14 +20,22 @@ class TestCalculateCommission:
         assert result.base_fee == D("50.00")
         assert result.percentage_amount == D("1500.00")
         assert result.fixed_fee == D("25.00")
+        assert result.subtotal == D("1575.00")
+        assert result.clamped is None
         assert result.total == D("1575.00")
 
     def test_total_is_raised_to_min_fee(self):
         # 50 + 15 + 25 = 90 < min_fee 100
-        assert calculate_commission(corridor("RU-CN-CNY"), D("1000")).total == D("100.00")
+        result = calculate_commission(corridor("RU-CN-CNY"), D("1000"))
+        assert result.subtotal == D("100.00")
+        assert result.clamped == "min"
+        assert result.total == D("100.00")
 
     def test_total_is_capped_by_max_fee(self):
-        assert calculate_commission(corridor("RU-CN-CNY"), D("999999")).total == D("5000.00")
+        result = calculate_commission(corridor("RU-CN-CNY"), D("999999"))
+        assert result.subtotal == D("5000.00")
+        assert result.clamped == "max"
+        assert result.total == D("5000.00")
 
     def test_rounds_half_up_to_cents(self):
         c = Corridor("X-Y-Z", "RU", "CN", "CNY", D("0"), D("0.005"), D("0"), D("1"), D("1000000"), D("0"), D("100"))
@@ -38,6 +46,8 @@ class TestCalculateCommission:
     def test_multiplier_applies_after_min_max_clamp(self):
         result = calculate_commission(corridor("RU-CN-CNY"), D("100000"), D("0.700"))
         assert result.multiplier == D("0.700")
+        assert result.subtotal == D("1575.00")
+        assert result.clamped is None
         assert result.total == D("1102.50")
 
 

@@ -23,29 +23,32 @@ class TransferRequest(BaseModel):
         return value
 
 
-def commission_json(commission: Commission) -> dict[str, float]:
+def commission_json(commission: Commission) -> dict[str, Any]:
     return {
         "base_fee": float(commission.base_fee),
         "percentage_fee": float(commission.percentage_fee),
         "percentage_amount": float(commission.percentage_amount),
         "fixed_fee": float(commission.fixed_fee),
+        "subtotal": float(commission.subtotal),
+        "clamped": commission.clamped,
         "multiplier": float(commission.multiplier),
         "total": float(commission.total),
     }
 
 
 def calculate_json(corridor: Corridor, amount: Decimal, commission: Commission) -> dict[str, Any]:
+    fields = commission_json(commission)
     return {
         "corridor_id": corridor.corridor_id,
         "from_country": corridor.from_country,
         "to_country": corridor.to_country,
         "currency": corridor.currency,
         "amount": float(amount),
-        "base_fee": float(commission.base_fee),
-        "percentage_fee": float(commission.percentage_fee),
-        "percentage_amount": float(commission.percentage_amount),
-        "fixed_fee": float(commission.fixed_fee),
-        "total_commission": float(commission.total),
+        "base_fee": fields["base_fee"],
+        "percentage_fee": fields["percentage_fee"],
+        "percentage_amount": fields["percentage_amount"],
+        "fixed_fee": fields["fixed_fee"],
+        "total_commission": fields["total"],
         "min_fee": float(corridor.min_fee),
         "max_fee": float(corridor.max_fee),
     }

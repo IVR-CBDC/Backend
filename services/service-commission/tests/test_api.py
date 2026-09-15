@@ -94,6 +94,8 @@ class TestQuotes:
                 "percentage_fee": 0.015,
                 "percentage_amount": 1500.0,
                 "fixed_fee": 25.0,
+                "subtotal": 1575.0,
+                "clamped": None,
                 "multiplier": 0.4,
                 "total": 630.0,
             },
