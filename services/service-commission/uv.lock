@@ -646,7 +646,7 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "httpx" },
     { name = "pytest" },
@@ -657,15 +657,18 @@ dev = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.31" },
     { name = "fastapi", specifier = ">=0.128" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28" },
     { name = "pydantic", specifier = ">=2.13" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.2" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.44" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.39" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "pytest", specifier = ">=8.4" },
+    { name = "pytest-asyncio", specifier = ">=1.2" },
+]
 
 [[package]]
 name = "sqlalchemy"
