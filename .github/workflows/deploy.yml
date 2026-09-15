@@ -10,7 +10,7 @@ env:
   # github.repository это формат owner/repo, например MyName/IVR-Backend
   IMAGE_NAME_AUTH: ${{ github.repository }}/service-auth
   IMAGE_NAME_CORE: ${{ github.repository }}/service-core
-  IMAGE_NAME_TEST: ${{ github.repository }}/service-test-python
+  IMAGE_NAME_COMMISSION: ${{ github.repository }}/service-commission
 
 jobs:
   build-and-push:
@@ -66,23 +66,23 @@ jobs:
           tags: ${{ steps.meta-core.outputs.tags }}
           labels: ${{ steps.meta-core.outputs.labels }}
 
-      # --- Сборка и пуш Test Python Service ---
-      - name: Extract metadata for test
-        id: meta-test
+      # --- Сборка и пуш Commission Service ---
+      - name: Extract metadata for commission
+        id: meta-commission
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_TEST }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_COMMISSION }}
           tags: |
             type=sha,format=short
 
-      - name: Build and push service-test-python
+      - name: Build and push service-commission
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: services/service-test-python/Dockerfile
+          file: services/service-commission/Dockerfile
           push: true
-          tags: ${{ steps.meta-test.outputs.tags }}
-          labels: ${{ steps.meta-test.outputs.labels }}
+          tags: ${{ steps.meta-commission.outputs.tags }}
+          labels: ${{ steps.meta-commission.outputs.labels }}
           
     outputs:
       tag: ${{ fromJSON(steps.meta-auth.outputs.json).labels['org.opencontainers.image.version'] }} # берем sha тег
@@ -93,7 +93,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
+      - name: Generate migration values
+        run: |
+          for s in service-auth service-core service-commission; do
+            bash infra/gen-migration-values.sh "$s"
+          done
+
       # Копируем папку helm на сервер, чтобы применить свежие манифесты
       - name: Copy Helm charts to server
         uses: appleboy/scp-action@v0.1.7
@@ -104,7 +110,7 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           source: "infra/helm"
           target: "~/deploy-ivr"
-          
+
       - name: Deploy to k3s via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -120,23 +126,26 @@ jobs:
             # Auth
             helm upgrade --install service-auth ./generic-service \
               -f values-service-auth.yaml \
+              -f generated/migrations-service-auth.yaml \
               --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_AUTH }} \
               --set image.tag=${{ needs.build-and-push.outputs.tag }} \
               --set "imagePullSecrets[0].name=ghcr-secret" \
               -n backend
-              
+
             # Core
             helm upgrade --install service-core ./generic-service \
               -f values-service-core.yaml \
+              -f generated/migrations-service-core.yaml \
               --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CORE }} \
               --set image.tag=${{ needs.build-and-push.outputs.tag }} \
               --set "imagePullSecrets[0].name=ghcr-secret" \
               -n backend
-              
-            # Test Python
-            helm upgrade --install service-test-python ./generic-service \
-              -f values-service-test-python.yaml \
-              --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_TEST }} \
+
+            # Commission
+            helm upgrade --install service-commission ./generic-service \
+              -f values-service-commission.yaml \
+              -f generated/migrations-service-commission.yaml \
+              --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_COMMISSION }} \
               --set image.tag=${{ needs.build-and-push.outputs.tag }} \
               --set "imagePullSecrets[0].name=ghcr-secret" \
               -n backend

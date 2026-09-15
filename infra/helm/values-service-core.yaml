@@ -42,9 +42,6 @@ env:
 migrations:
   enabled: true
   image: postgres:16
-  files:
-    001_init.sql: |
-      CREATE TABLE IF NOT EXISTS _placeholder (id SERIAL PRIMARY KEY);
   db:
     host: pg-core-postgresql.data.svc.cluster.local
     port: "5432"

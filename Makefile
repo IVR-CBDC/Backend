@@ -107,7 +107,7 @@ k3s-setup: k3s-install k3s-import-images keys k3s-build k3s-deploy
 # ==============================================================================
 
 REGISTRY   := localhost:5000
-K3S_SERVICES := service-auth service-core service-test-python
+K3S_SERVICES := service-auth service-core service-commission
 HELM_CHART := infra/helm/generic-service
 
 # --- Build & Push to local registry ---
@@ -127,10 +127,10 @@ k3s-deploy-data:
 		-n data \
 		--set auth.username=core --set auth.password=core --set auth.database=core \
 		--set primary.persistence.size=1Gi
-	helm upgrade --install pg-test-python oci://registry-1.docker.io/bitnamicharts/postgresql \
+	helm upgrade --install pg-commission oci://registry-1.docker.io/bitnamicharts/postgresql \
 		-n data \
-		--set auth.username=test_python --set auth.password=test_python \
-		--set auth.database=test_python --set primary.persistence.size=1Gi
+		--set auth.username=commission --set auth.password=commission \
+		--set auth.database=commission --set primary.persistence.size=1Gi
 	helm upgrade --install redis oci://registry-1.docker.io/bitnamicharts/redis \
 		-n data \
 		--set architecture=standalone --set auth.enabled=false \
@@ -139,15 +139,16 @@ k3s-deploy-data:
 # --- Deploy services ---
 # Resolves PG ClusterIP at deploy time to bypass broken in-cluster DNS (VPN issue)
 k3s-deploy-%:
+	bash infra/gen-migration-values.sh $*
 	$(eval SVC_NAME := $(shell echo $* | sed 's/service-//'))
 	$(eval PG_IP := $(shell kubectl get svc pg-$(SVC_NAME)-postgresql -n data -o jsonpath='{.spec.clusterIP}' 2>/dev/null))
 	$(eval PG_HOST := pg-$(SVC_NAME)-postgresql.data.svc.cluster.local)
 	@if [ -n "$(PG_IP)" ]; then \
 		sed 's/$(PG_HOST)/$(PG_IP)/g' infra/helm/values-$*.yaml > /tmp/values-$*.yaml; \
-		helm upgrade --install $* $(HELM_CHART) -f /tmp/values-$*.yaml -n backend; \
+		helm upgrade --install $* $(HELM_CHART) -f /tmp/values-$*.yaml -f infra/helm/generated/migrations-$*.yaml -n backend; \
 		rm -f /tmp/values-$*.yaml; \
 	else \
-		helm upgrade --install $* $(HELM_CHART) -f infra/helm/values-$*.yaml -n backend; \
+		helm upgrade --install $* $(HELM_CHART) -f infra/helm/values-$*.yaml -f infra/helm/generated/migrations-$*.yaml -n backend; \
 	fi
 
 k3s-deploy: k3s-deploy-data $(addprefix k3s-deploy-,$(K3S_SERVICES))
@@ -157,8 +158,8 @@ up-k3s: k3s-build k3s-deploy
 
 # --- Teardown ---
 down-k3s:
-	-helm uninstall service-auth service-core service-test-python -n backend 2>/dev/null
-	-helm uninstall pg-auth pg-core pg-test-python redis -n data 2>/dev/null
+	-helm uninstall service-auth service-core service-commission -n backend 2>/dev/null
+	-helm uninstall pg-auth pg-core pg-commission redis -n data 2>/dev/null
 
 # --- Logs ---
 k3s-logs-%:
@@ -179,7 +180,6 @@ k3s-test-health:
 	@echo "=== Health checks ==="
 	@curl -sf $(BASE_URL)/api/auth/health | python3 -m json.tool
 	@curl -sf $(BASE_URL)/api/core/health | python3 -m json.tool
-	@curl -sf $(BASE_URL)/health2 | python3 -m json.tool
 	@echo "All healthy!"
 
 k3s-test-auth:

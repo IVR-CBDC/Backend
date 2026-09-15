@@ -1,0 +1,45 @@
+replicaCount: 1
+
+image:
+  repository: localhost:5000/service-commission
+  tag: latest
+
+service:
+  port: 8000
+
+config:
+  enabled: false
+
+jwtKeys:
+  private: false
+  public: true
+  publicFile: jwt_public.pem
+  mountPath: /etc/keys
+
+env:
+  - name: PG_DSN
+    value: "postgresql+asyncpg://commission:commission@pg-commission-postgresql.data.svc.cluster.local:5432/commission"
+  - name: JWT_PUBLIC_KEY_PATH
+    value: /etc/keys/jwt_public.pem
+
+migrations:
+  enabled: true
+  image: postgres:16
+  db:
+    host: pg-commission-postgresql.data.svc.cluster.local
+    port: "5432"
+    name: commission
+    user: commission
+    password: commission
+
+ingress:
+  enabled: false
+
+cors:
+  enabled: false
+
+networkPolicy:
+  enabled: true
+
+healthcheck:
+  path: /health
