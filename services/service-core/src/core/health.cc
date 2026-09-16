@@ -20,5 +20,15 @@ Task<> CoreController::health(HttpRequestPtr,
     j["postgres_ok"] = false;
     j["ok"] = false;
   }
+
+  try {
+    auto redis = app().getRedisClient();
+    co_await redis->execCommandCoro("ping");
+    j["redis_ok"] = true;
+  } catch (...) {
+    j["redis_ok"] = false;
+    j["ok"] = false;
+  }
+
   cb(HttpResponse::newHttpJsonResponse(j));
 }

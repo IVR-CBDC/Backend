@@ -58,6 +58,10 @@ struct TimelineStep {
   std::string actor;
   StepStatus status;
   std::string delay_reason;
+  // ISO-8601 UTC, empty when not yet reached; trailing so existing
+  // brace-initializers (state_machine.cc, tests) keep compiling unchanged.
+  std::string started_at;
+  std::string finished_at;
 };
 
 struct DealState {

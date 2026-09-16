@@ -47,13 +47,13 @@ bool allRequiredApprovedIfReviewed(const DealState &deal, const std::string &kin
 
 std::vector<TimelineStep> initialTimeline() {
   return {
-      {1, "Сделка создана", "Вы", StepStatus::done, ""},
-      {2, "Выбор сценария расчёта", "Вы", StepStatus::pending, ""},
-      {3, "Документы", "Вы", StepStatus::pending, ""},
-      {4, "Комплаенс-проверка", "Банк", StepStatus::pending, ""},
-      {5, "Проверка ФНС", "ФНС", StepStatus::pending, ""},
-      {6, "Расчёт", "Банк", StepStatus::pending, ""},
-      {7, "Завершение сделки", "Система", StepStatus::pending, ""},
+      {1, "Сделка создана", "Вы", StepStatus::done, "", "", ""},
+      {2, "Выбор сценария расчёта", "Вы", StepStatus::pending, "", "", ""},
+      {3, "Документы", "Вы", StepStatus::pending, "", "", ""},
+      {4, "Комплаенс-проверка", "Банк", StepStatus::pending, "", "", ""},
+      {5, "Проверка ФНС", "ФНС", StepStatus::pending, "", "", ""},
+      {6, "Расчёт", "Банк", StepStatus::pending, "", "", ""},
+      {7, "Завершение сделки", "Система", StepStatus::pending, "", "", ""},
   };
 }
 

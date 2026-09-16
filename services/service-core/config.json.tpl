@@ -19,4 +19,15 @@
       "connection_number": 8
     }
   ]
+  ,
+  "redis_clients": [
+    {
+      "name": "default",
+      "host": "${REDIS_HOST}",
+      "port": ${REDIS_PORT},
+      "db": 0,
+      "is_fast": false,
+      "number_of_connections": 2
+    }
+  ]
 }
