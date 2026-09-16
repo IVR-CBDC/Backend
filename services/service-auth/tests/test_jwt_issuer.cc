@@ -20,3 +20,9 @@ TEST_CASE("истёкший токен не проходит верификац�
 
   CHECK_FALSE(common::JwtVerifier::instance().verify(token).has_value());
 }
+
+TEST_CASE("issue с ttl_seconds = 0 бросает исключение") {
+  REQUIRE_THROWS_AS(
+      auth_svc::JwtIssuer::instance().issue("user-42", "company-7", 0),
+      std::invalid_argument);
+}

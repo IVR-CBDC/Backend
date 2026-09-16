@@ -45,6 +45,13 @@ TEST_CASE("чужая подпись отклоняется") {
   CHECK_FALSE(common::JwtVerifier::instance().verify(makeToken(kForeignKey)).has_value());
 }
 
+TEST_CASE("токен без exp отклоняется") {
+  TokenSpec spec;
+  spec.ttl_seconds = 0;  // 0 => exp вовсе не добавляется в токен
+
+  CHECK_FALSE(common::JwtVerifier::instance().verify(makeToken(kOwnKey, spec)).has_value());
+}
+
 TEST_CASE("истёкший токен отклоняется") {
   TokenSpec spec;
   spec.ttl_seconds = -60;

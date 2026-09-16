@@ -44,6 +44,13 @@ int extract_claims(jwt_t *jwt, jwt_config_t *config) {
     if (jwt_claim_get(jwt, &jval) == JWT_VALUE_ERR_NONE && jval.str_val)
         claims->aud = jval.str_val;
 
+    jval = jwt_value_t{};
+    jval.type = JWT_VALUE_INT;
+    jval.name = "exp";
+    jval.error = JWT_VALUE_ERR_NONE;
+    if (jwt_claim_get(jwt, &jval) == JWT_VALUE_ERR_NONE)
+        claims->exp = jval.int_val;
+
     return 0;
 }
 
@@ -92,7 +99,9 @@ std::optional<Claims> JwtVerifier::verify(const std::string& token) {
         return std::nullopt;
 
     // Токен без company_id бесполезен: все доменные данные разделены по юрлицу.
-    if (c.sub.empty() || c.company_id.empty()) return std::nullopt;
+    // Токен без exp никогда не истекает — libjwt проверяет exp, только если
+    // claim присутствует, поэтому отсутствие отклоняем здесь явно.
+    if (c.sub.empty() || c.company_id.empty() || c.exp == 0) return std::nullopt;
 
     return c;
 }

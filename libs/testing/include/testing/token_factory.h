@@ -5,6 +5,7 @@
 
 #include <jwt.h>
 
+#include <cstdlib>
 #include <ctime>
 #include <memory>
 #include <optional>
@@ -18,7 +19,11 @@ struct TokenSpec {
   std::optional<std::string> company_id = "22222222-2222-4222-8222-222222222222";
   std::string iss = "service-auth";
   std::string aud = "internal";
-  int ttl_seconds = 300;  // отрицательное значение => токен уже истёк
+  // Положительное => TTL в секундах от текущего момента.
+  // Отрицательное => токен уже истёк (exp в прошлом).
+  // 0 => claim exp вовсе не добавляется в токен (для теста «токен без exp
+  // отклоняется»; в проде JwtIssuer::issue бросает исключение на ttl == 0).
+  int ttl_seconds = 300;
 };
 
 inline std::string makeToken(const std::string &private_jwk_path, const TokenSpec &spec = {}) {

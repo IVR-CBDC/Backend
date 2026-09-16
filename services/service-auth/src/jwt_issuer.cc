@@ -33,6 +33,9 @@ JwtIssuer::~JwtIssuer() {
 
 std::string JwtIssuer::issue(const std::string &user_id,
                              const std::string &company_id, int ttl_seconds) {
+  if (ttl_seconds == 0)
+    throw std::invalid_argument("ttl_seconds must not be zero");
+
   jwt_builder_t *builder = jwt_builder_new();
   if (!builder)
     throw std::runtime_error("jwt_builder_new failed");

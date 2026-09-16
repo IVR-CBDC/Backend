@@ -11,6 +11,7 @@ struct Claims {
     std::string company_id;  // юрлицо, от имени которого работает пользователь
     std::string iss;
     std::string aud;
+    long long exp = 0;       // unix time истечения; 0 значит claim отсутствовал в токене
 };
 
 class JwtVerifier {
