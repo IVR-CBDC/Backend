@@ -50,6 +50,8 @@ services:
       POSTGRES_USER: core
       POSTGRES_PASSWORD: core
       POSTGRES_DB: core
+    ports:
+      - "127.0.0.1:5435:5432"   # для api-тестов и ручной отладки
     volumes:
       - pg_core_data:/var/lib/postgresql/data
     healthcheck:
