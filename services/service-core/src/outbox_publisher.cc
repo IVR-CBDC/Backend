@@ -82,7 +82,19 @@ Task<int> OutboxPublisher::publishOnce() {
       "WHERE published_at IS NULL ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 100");
   if (rows.size() == 0) co_return 0;
 
+  // getRedisClient() returns a null RedisClientPtr (not a throw) when
+  // config.json has no "default" redis client — dereferencing it below would
+  // segfault, not throw, so this must be checked before the loop rather than
+  // caught around it. Logged once per tick (not once per row) and rows are
+  // left unpublished (the SELECT above didn't commit its own transaction —
+  // returning here without touching published_at rolls the claim back) so a
+  // misconfigured Redis degrades into "events stop flowing" rather than a
+  // crash loop.
   auto redis = app().getRedisClient();
+  if (!redis) {
+    LOG_ERROR << "outbox publisher: no redis client configured (redis_clients missing from config.json?)";
+    co_return 0;
+  }
   std::vector<long long> ids;
   ids.reserve(rows.size());
   for (const auto &row : rows) {

@@ -28,6 +28,13 @@ config:
         passwd: core
         is_fast: false
         connection_number: 8
+    redis_clients:
+      - name: default
+        host: redis-master.data.svc.cluster.local
+        port: 6379
+        db: 0
+        is_fast: false
+        number_of_connections: 2
 
 jwtKeys:
   private: false
@@ -38,6 +45,12 @@ jwtKeys:
 env:
   - name: JWT_PUBLIC_KEY_PATH
     value: /etc/keys/jwt_public.jwk
+  - name: COMMISSION_URL
+    value: "http://service-commission.backend.svc.cluster.local:8000"
+  - name: EMULATOR_ENABLED
+    value: "true"
+  - name: EMULATOR_SPEED
+    value: "realistic"
 
 migrations:
   enabled: true

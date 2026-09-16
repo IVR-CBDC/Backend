@@ -21,13 +21,24 @@ Task<> CoreController::health(HttpRequestPtr,
     j["ok"] = false;
   }
 
-  try {
-    auto redis = app().getRedisClient();
-    co_await redis->execCommandCoro("ping");
-    j["redis_ok"] = true;
-  } catch (...) {
+  // getRedisClient() returns a null RedisClientPtr (not a throw) for a
+  // client name that isn't in config.json's redis_clients — which is
+  // exactly what happens if that section is ever missing (see F1: it used
+  // to be, in k3s). Dereferencing a null RedisClientPtr is a segfault, not
+  // an exception, so the try/catch below can't save us from it — it must be
+  // guarded before ever calling into it.
+  auto redis = app().getRedisClient();
+  if (!redis) {
     j["redis_ok"] = false;
     j["ok"] = false;
+  } else {
+    try {
+      co_await redis->execCommandCoro("ping");
+      j["redis_ok"] = true;
+    } catch (...) {
+      j["redis_ok"] = false;
+      j["ok"] = false;
+    }
   }
 
   cb(HttpResponse::newHttpJsonResponse(j));
