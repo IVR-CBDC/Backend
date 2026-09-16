@@ -56,6 +56,26 @@ struct DealDetail {
   std::vector<TimelineStep> timeline;
 };
 
+// Inputs the state machine can't produce by itself (Task 2's Transition
+// only knows stage/timeline/notifications) but that a write still needs to
+// persist: the authoritative commission just fetched, or which document
+// changed status. Optional fields are "leave column unchanged"; document_*
+// only take effect when document_kind is set (paired at the call site).
+struct DealMutation {
+  std::optional<Scenario> scenario;
+  std::optional<std::string> commission_total;
+  Json::Value commission_breakdown;
+  std::optional<std::string> document_kind;
+  std::optional<DocStatus> document_status;
+  std::string document_reject_reason;
+  std::optional<long long> next_action_in_sec;
+};
+
+struct ApplyResult {
+  enum class Status { ok, not_found, version_conflict } status;
+  std::optional<DealDetail> deal;
+};
+
 class DealRepository {
  public:
   // Loads a deal by id, scoped to company_id (cross-tenant lookups return
@@ -67,6 +87,23 @@ class DealRepository {
   // Company's deals, most recently updated first. `limit` is clamped to
   // 1..100 by the caller before reaching here (see deals.cc).
   static drogon::Task<std::vector<DealRow>> list(std::string company_id, int limit);
+
+  // Creates a deal (stage=created, version=0), its seven initialTimeline()
+  // rows, and a `deal.created` outbox event, all in one transaction. Callers
+  // (deals.cc) validate the fields before calling this — create() trusts
+  // them as-is.
+  static drogon::Task<DealDetail> create(std::string company_id, std::string counterparty_country,
+                                         std::string counterparty_name, OperationType operation_type,
+                                         std::string amount, std::string currency);
+
+  // The one writer every state-machine-driven endpoint (Task 4's
+  // chooseScenario/submitDocument, and Task 5/6's compliance/settlement/
+  // document-review handlers) goes through: re-checks `expected_version`
+  // under a row lock, applies `transition` and `mutation`, and returns the
+  // fresh DealDetail — all in one transaction so a concurrent request never
+  // sees a half-applied stage change.
+  static drogon::Task<ApplyResult> apply(std::string deal_id, std::string company_id, int expected_version,
+                                         const Transition &transition, const DealMutation &mutation);
 };
 
 // Bridges the persisted row/detail into the pure state machine's DealState.

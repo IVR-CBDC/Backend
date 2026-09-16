@@ -129,14 +129,14 @@ const char *kDealColumns = R"(
     to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS updated_at
 )";
 
-}  // namespace
-
-Task<std::optional<DealDetail>> DealRepository::find(std::string deal_id, std::string company_id) {
-  auto db = app().getDbClient();
-
+// Shared by find() (fresh connection) and apply() (inside its transaction,
+// after the row lock already proved the deal exists) — a DbClientPtr works
+// for both since orm::Transaction subclasses DbClient. Assumes the deal
+// exists; callers that don't already know that (find()) check dealRows
+// themselves first.
+Task<DealDetail> loadDealDetail(std::shared_ptr<orm::DbClient> db, std::string deal_id, std::string company_id) {
   auto dealRows = co_await db->execSqlCoro(
       std::string("SELECT ") + kDealColumns + " FROM deals WHERE id = $1 AND company_id = $2", deal_id, company_id);
-  if (dealRows.size() == 0) co_return std::nullopt;
 
   DealDetail detail;
   detail.deal = rowToDealRow(dealRows[0]);
@@ -162,6 +162,31 @@ Task<std::optional<DealDetail>> DealRepository::find(std::string deal_id, std::s
   co_return detail;
 }
 
+// scenarioStepActor mirrors state_machine.cc's private helper of the same
+// purpose: Task 2's public interface only exposes the step *label*
+// (scenarioStepLabel), not the actor, so apply() keeps its own copy for the
+// one extra field it writes when a scenario is confirmed (see step 6 below).
+std::string scenarioStepActor(Scenario scenario) {
+  switch (scenario) {
+    case Scenario::cbdc: return "Платформа ЦВЦБ";
+    case Scenario::bank_transfer: return "Банк";
+    case Scenario::smart_contract: return "Смарт-контракт";
+    case Scenario::trade_finance: return "Банк-гарант";
+  }
+  return "";
+}
+
+}  // namespace
+
+Task<std::optional<DealDetail>> DealRepository::find(std::string deal_id, std::string company_id) {
+  auto db = app().getDbClient();
+
+  auto exists = co_await db->execSqlCoro("SELECT 1 FROM deals WHERE id = $1 AND company_id = $2", deal_id, company_id);
+  if (exists.size() == 0) co_return std::nullopt;
+
+  co_return co_await loadDealDetail(db, deal_id, company_id);
+}
+
 Task<std::vector<DealRow>> DealRepository::list(std::string company_id, int limit) {
   int clamped = std::clamp(limit, 1, 100);
   auto db = app().getDbClient();
@@ -179,6 +204,151 @@ Task<std::vector<DealRow>> DealRepository::list(std::string company_id, int limi
   out.reserve(rows.size());
   for (const auto &row : rows) out.push_back(rowToDealRow(row));
   co_return out;
+}
+
+Task<DealDetail> DealRepository::create(std::string company_id, std::string counterparty_country,
+                                        std::string counterparty_name, OperationType operation_type,
+                                        std::string amount, std::string currency) {
+  auto db = app().getDbClient();
+  auto trans = co_await db->newTransactionCoro();
+
+  auto inserted = co_await trans->execSqlCoro(
+      "INSERT INTO deals (id, company_id, counterparty_country, counterparty_name, operation_type, amount, "
+      "currency, stage, version) "
+      "VALUES (gen_random_uuid(), $1::uuid, $2, $3, $4, $5::numeric, $6, 'created', 0) RETURNING id::text",
+      company_id, counterparty_country, counterparty_name, std::string(toString(operation_type)), amount, currency);
+  const auto deal_id = inserted[0]["id"].as<std::string>();
+
+  // initialTimeline()'s seq-1 step is already "done" (the deal itself was
+  // just created "by" the user); the rest start "pending" with no
+  // started_at/finished_at — mirrors what apply()'s per-step UPDATE would
+  // set for a step entering/leaving those statuses.
+  for (const auto &step : initialTimeline()) {
+    co_await trans->execSqlCoro(
+        "INSERT INTO timeline_events (id, deal_id, seq, step, actor, status, started_at, finished_at) "
+        "VALUES (gen_random_uuid(), $1::uuid, $2::int, $3, $4, $5, "
+        "        CASE WHEN $5 = 'done' THEN now() ELSE NULL END, "
+        "        CASE WHEN $5 = 'done' THEN now() ELSE NULL END)",
+        deal_id, step.seq, step.step, step.actor, std::string(toString(step.status)));
+  }
+
+  Json::Value payload;
+  payload["type"] = "deal.created";
+  payload["deal_id"] = deal_id;
+  co_await trans->execSqlCoro("INSERT INTO outbox (company_id, topic, payload) VALUES ($1::uuid, $2, $3::jsonb)",
+                              company_id, std::string("deal-events"), payload);
+
+  co_return co_await loadDealDetail(trans, deal_id, company_id);
+}
+
+Task<ApplyResult> DealRepository::apply(std::string deal_id, std::string company_id, int expected_version,
+                                        const Transition &transition, const DealMutation &mutation) {
+  auto db = app().getDbClient();
+  auto trans = co_await db->newTransactionCoro();
+
+  auto locked =
+      co_await trans->execSqlCoro("SELECT version FROM deals WHERE id = $1::uuid AND company_id = $2::uuid FOR UPDATE",
+                                  deal_id, company_id);
+  if (locked.size() == 0) co_return ApplyResult{ApplyResult::Status::not_found, std::nullopt};
+  if (locked[0]["version"].as<int>() != expected_version)
+    co_return ApplyResult{ApplyResult::Status::version_conflict, std::nullopt};
+
+  std::optional<std::string> scenarioText =
+      mutation.scenario ? std::optional(std::string(toString(*mutation.scenario))) : std::nullopt;
+  std::optional<std::string> blockedFromText =
+      transition.blocked_from ? std::optional(std::string(toString(*transition.blocked_from))) : std::nullopt;
+  // deals.next_action_at is where the deal itself schedules its own next
+  // step (Task 5's emulator dispatcher); a document-level mutation instead
+  // schedules deal_documents.next_action_at below, so it leaves this column
+  // untouched (NULL — no deal-level action pending).
+  std::optional<long long> dealLevelDelaySec = mutation.document_kind ? std::nullopt : mutation.next_action_in_sec;
+
+  co_await trans->execSqlCoro(
+      "UPDATE deals SET "
+      "  stage = $2, "
+      "  blocked_from = $3, "
+      "  blocker_reason = NULLIF($4, ''), "
+      "  scenario = COALESCE($5, scenario), "
+      "  commission_total = COALESCE($6::numeric, commission_total), "
+      "  commission_breakdown = COALESCE($7::jsonb, commission_breakdown), "
+      "  next_action_at = CASE WHEN $8::bigint IS NOT NULL THEN now() + ($8::bigint * interval '1 second') "
+      "                        ELSE NULL END, "
+      "  version = version + 1, "
+      "  updated_at = now() "
+      "WHERE id = $1::uuid",
+      deal_id, std::string(toString(transition.stage)), blockedFromText, transition.blocker_reason, scenarioText,
+      mutation.commission_total, mutation.commission_breakdown, dealLevelDelaySec);
+
+  if (mutation.document_kind) {
+    co_await trans->execSqlCoro(
+        "UPDATE deal_documents SET "
+        "  status = $1, "
+        "  reject_reason = NULLIF($2, ''), "
+        "  next_action_at = CASE WHEN $3::bigint IS NOT NULL THEN now() + ($3::bigint * interval '1 second') "
+        "                        ELSE NULL END, "
+        "  updated_at = now() "
+        "WHERE deal_id = $4::uuid AND kind = $5",
+        std::string(toString(mutation.document_status.value_or(DocStatus::missing))), mutation.document_reject_reason,
+        mutation.next_action_in_sec, deal_id, *mutation.document_kind);
+  }
+
+  if (mutation.scenario) {
+    // Documents required for the chosen scenario didn't exist before now —
+    // create them as `missing` (ON CONFLICT guards a retried request that
+    // already inserted them under a version that then failed to commit
+    // client-side, though the row lock above makes that window vanishingly
+    // small in practice).
+    for (const auto &kind : requiredDocuments(*mutation.scenario)) {
+      co_await trans->execSqlCoro(
+          "INSERT INTO deal_documents (id, deal_id, kind, status) VALUES (gen_random_uuid(), $1::uuid, $2, 'missing') "
+          "ON CONFLICT (deal_id, kind) DO NOTHING",
+          deal_id, kind);
+    }
+  }
+
+  for (const auto &change : transition.timeline) {
+    co_await trans->execSqlCoro(
+        "UPDATE timeline_events SET "
+        "  status = $2, "
+        "  delay_reason = NULLIF($3, ''), "
+        "  started_at = COALESCE(started_at, now()), "
+        "  finished_at = CASE WHEN $2 = 'done' THEN now() ELSE finished_at END "
+        "WHERE deal_id = $1::uuid AND seq = $4::int",
+        deal_id, std::string(toString(change.status)), change.delay_reason, change.seq);
+  }
+
+  if (mutation.scenario) {
+    // Step 6 ("Расчёт") is scenario-agnostic until a scenario is chosen;
+    // rename it now even though its status doesn't change here — it stays
+    // "pending" until settlement actually starts (Task 5/6).
+    co_await trans->execSqlCoro(
+        "UPDATE timeline_events SET step = $2, actor = $3 WHERE deal_id = $1::uuid AND seq = 6", deal_id,
+        scenarioStepLabel(*mutation.scenario), scenarioStepActor(*mutation.scenario));
+  }
+
+  for (const auto &draft : transition.notifications) {
+    auto notification = co_await trans->execSqlCoro(
+        "INSERT INTO notifications (id, company_id, deal_id, severity, message) "
+        "VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4) RETURNING id::text",
+        company_id, deal_id, draft.severity, draft.message);
+    const auto notification_id = notification[0]["id"].as<std::string>();
+
+    Json::Value payload;
+    payload["type"] = "notification.created";
+    payload["notification_id"] = notification_id;
+    payload["deal_id"] = deal_id;
+    co_await trans->execSqlCoro("INSERT INTO outbox (company_id, topic, payload) VALUES ($1::uuid, $2, $3::jsonb)",
+                                company_id, std::string("deal-events"), payload);
+  }
+
+  Json::Value payload;
+  payload["type"] = "deal.updated";
+  payload["deal_id"] = deal_id;
+  co_await trans->execSqlCoro("INSERT INTO outbox (company_id, topic, payload) VALUES ($1::uuid, $2, $3::jsonb)",
+                              company_id, std::string("deal-events"), payload);
+
+  auto detail = co_await loadDealDetail(trans, deal_id, company_id);
+  co_return ApplyResult{ApplyResult::Status::ok, std::move(detail)};
 }
 
 DealState toDealState(const DealDetail &detail) {

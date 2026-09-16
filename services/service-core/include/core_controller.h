@@ -26,6 +26,33 @@ public:
   // @404    {"code": "string", "error": "string"}
   ADD_METHOD_TO(CoreController::getDeal, "/api/core/deals/{id}", drogon::Get,
                 "common::JwtFilter");
+
+  // @POST /api/core/deals
+  // @summary Создание сделки
+  // @header Authorization: Bearer <token>
+  // @body   {"counterparty_country": "string", "counterparty_name": "string", "operation_type": "string", "amount": "number", "currency": "string"}
+  // @201    {"deal": "object"}
+  // @400    {"code": "string", "error": "string"}
+  ADD_METHOD_TO(CoreController::createDeal, "/api/core/deals", drogon::Post, "common::JwtFilter");
+
+  // @POST /api/core/deals/{id}/scenario
+  // @summary Подтверждение сценария расчёта (комиссия пересчитывается на сервере)
+  // @header Authorization: Bearer <token>
+  // @body   {"scenario": "string", "version": "integer"}
+  // @200    {"deal": "object"}
+  // @409    {"code": "string", "error": "string"}
+  ADD_METHOD_TO(CoreController::chooseScenario, "/api/core/deals/{id}/scenario", drogon::Post,
+                "common::JwtFilter");
+
+  // @POST /api/core/deals/{dealId}/documents/{docId}/submit
+  // @summary Подача документа на проверку
+  // @header Authorization: Bearer <token>
+  // @body   {"version": "integer"}
+  // @200    {"deal": "object"}
+  // @409    {"code": "string", "error": "string"}
+  ADD_METHOD_TO(CoreController::submitDocument,
+                "/api/core/deals/{dealId}/documents/{docId}/submit", drogon::Post,
+                "common::JwtFilter");
   METHOD_LIST_END
 
   drogon::Task<>
@@ -37,6 +64,14 @@ public:
   static drogon::Task<> getDeal(drogon::HttpRequestPtr req,
                                 std::function<void(const drogon::HttpResponsePtr &)> cb,
                                 std::string id);
+  static drogon::Task<> createDeal(drogon::HttpRequestPtr req,
+                                   std::function<void(const drogon::HttpResponsePtr &)> cb);
+  static drogon::Task<> chooseScenario(drogon::HttpRequestPtr req,
+                                       std::function<void(const drogon::HttpResponsePtr &)> cb,
+                                       std::string id);
+  static drogon::Task<> submitDocument(drogon::HttpRequestPtr req,
+                                       std::function<void(const drogon::HttpResponsePtr &)> cb,
+                                       std::string dealId, std::string docId);
 };
 
 } // namespace core_svc

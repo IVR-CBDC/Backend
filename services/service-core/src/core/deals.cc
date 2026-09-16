@@ -1,12 +1,83 @@
 #include "core_controller.h"
 #include "repository.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <common/helpers.h>
 #include <drogon/drogon.h>
+#include <sstream>
 
 using namespace core_svc;
 using namespace drogon;
 using common::jsonError;
+
+namespace {
+
+// true when `s` is exactly `len` ASCII letters; also uppercases it in place,
+// matching the brief's "приводится к верхнему регистру" for country/currency
+// codes.
+bool upperAlpha(std::string &s, size_t len) {
+  if (s.size() != len) return false;
+  for (char &c : s) {
+    if (!std::isalpha(static_cast<unsigned char>(c))) return false;
+    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  }
+  return true;
+}
+
+std::string trim(const std::string &s) {
+  size_t start = s.find_first_not_of(" \t\n\r");
+  if (start == std::string::npos) return "";
+  size_t end = s.find_last_not_of(" \t\n\r");
+  return s.substr(start, end - start + 1);
+}
+
+// Formats a validated amount as the canonical 2-decimal NUMERIC text that
+// DealRow::amount expects (see repository.h) — never stored as a double.
+std::string formatAmount(double amount) {
+  std::ostringstream out;
+  out.precision(2);
+  out << std::fixed << amount;
+  return out.str();
+}
+
+struct CreateDealInput {
+  std::string counterparty_country;
+  std::string counterparty_name;
+  OperationType operation_type;
+  std::string amount;  // canonical NUMERIC text
+  std::string currency;
+};
+
+// Returns the validation error message, or empty on success (out is filled
+// only on success). One field at a time so the user gets an actionable
+// message instead of a generic "bad request".
+std::string validateCreateDeal(const Json::Value &body, CreateDealInput &out) {
+  std::string country = body.get("counterparty_country", "").asString();
+  if (!upperAlpha(country, 2)) return "Код страны должен состоять из двух букв";
+
+  std::string name = trim(body.get("counterparty_name", "").asString());
+  if (name.empty()) return "Укажите название контрагента";
+
+  auto operation_type = operationTypeFromString(body.get("operation_type", "").asString());
+  if (!operation_type) return "operation_type должен быть import или export";
+
+  const Json::Value &amountJson = body["amount"];
+  if (!amountJson.isNumeric()) return "Сумма должна быть числом больше нуля";
+  double amount = amountJson.asDouble();
+  double scaled = amount * 100.0;
+  if (amount <= 0 || std::abs(scaled - std::round(scaled)) > 1e-6)
+    return "Сумма должна быть больше нуля и содержать не более двух знаков после запятой";
+
+  std::string currency = body.get("currency", "").asString();
+  if (!upperAlpha(currency, 3)) return "Код валюты должен состоять из трёх букв";
+
+  out = CreateDealInput{country, name, *operation_type, formatAmount(amount), currency};
+  return "";
+}
+
+}  // namespace
 
 // Список сделок компании: `limit` из query, зажимается в 1..100 в репозитории.
 Task<> CoreController::listDeals(HttpRequestPtr req,
@@ -69,6 +140,43 @@ Task<> CoreController::getDeal(HttpRequestPtr req,
     cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
   } catch (const std::exception &e) {
     LOG_ERROR << "getDeal error: " << e.what();
+    cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
+  }
+}
+
+// Создание сделки: только персистентность, никакого сценария и никакой
+// комиссии ещё — оба появляются при chooseScenario (репрайсится на сервере
+// там, не здесь).
+Task<> CoreController::createDeal(HttpRequestPtr req, std::function<void(const HttpResponsePtr &)> cb) {
+  auto company_id = req->attributes()->get<std::string>("company_id");
+
+  auto json = req->getJsonObject();
+  if (!json) {
+    cb(jsonError(k400BadRequest, "VALIDATION_ERROR", "Некорректное тело запроса"));
+    co_return;
+  }
+
+  CreateDealInput input;
+  if (auto error = validateCreateDeal(*json, input); !error.empty()) {
+    cb(jsonError(k400BadRequest, "VALIDATION_ERROR", error));
+    co_return;
+  }
+
+  try {
+    auto detail = co_await DealRepository::create(company_id, input.counterparty_country, input.counterparty_name,
+                                                   input.operation_type, input.amount, input.currency);
+
+    Json::Value out;
+    out["deal"] = dealJson(detail);
+    auto resp = HttpResponse::newHttpJsonResponse(out);
+    resp->setStatusCode(k201Created);
+    cb(resp);
+
+  } catch (const orm::DrogonDbException &e) {
+    LOG_ERROR << "createDeal db error: " << e.base().what();
+    cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
+  } catch (const std::exception &e) {
+    LOG_ERROR << "createDeal error: " << e.what();
     cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
   }
 }
