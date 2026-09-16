@@ -21,4 +21,7 @@ struct ValidationError {
 // Чистая проверка полей: без БД и HTTP, поэтому покрыта юнит-тестами.
 std::optional<ValidationError> validateRegister(const RegisterInput &input);
 
+// Приводит поля к каноничному виду (trim) — вызывать перед записью в БД.
+void normalizeRegisterInput(RegisterInput &input);
+
 }  // namespace auth_svc

@@ -42,5 +42,8 @@ Task<> AuthController::me(HttpRequestPtr req,
   } catch (const orm::DrogonDbException &e) {
     LOG_ERROR << "me db error: " << e.base().what();
     cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
+  } catch (const std::exception &e) {
+    LOG_ERROR << "me error: " << e.what();
+    cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
   }
 }

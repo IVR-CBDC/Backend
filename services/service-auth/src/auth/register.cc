@@ -19,13 +19,14 @@ AuthController::registerUser(const HttpRequestPtr req,
     co_return;
   }
 
-  const RegisterInput input{
+  RegisterInput input{
       (*json)["login"].asString(),
       (*json)["password"].asString(),
       json->get("name", "").asString(),
       (*json)["company_name"].asString(),
       (*json)["inn"].asString(),
   };
+  normalizeRegisterInput(input);
 
   if (const auto invalid = validateRegister(input)) {
     cb(jsonError(k400BadRequest, invalid->code, invalid->message));
@@ -40,21 +41,24 @@ AuthController::registerUser(const HttpRequestPtr req,
     const auto exists =
         co_await tx->execSqlCoro("SELECT 1 FROM users WHERE login = $1", input.login);
     if (exists.size() > 0) {
+      tx->rollback();
       cb(jsonError(k409Conflict, "USER_EXISTS",
                    "Пользователь с таким логином уже существует"));
       co_return;
     }
 
     // Компания заводится один раз на ИНН: второй сотрудник того же юрлица
-    // присоединяется к существующей записи, а не создаёт дубль.
-    auto company = co_await tx->execSqlCoro(
+    // присоединяется к существующей записи, а не создаёт дубль. DO UPDATE
+    // (а не DO NOTHING) берёт row lock на существующую строку и гарантированно
+    // возвращает ровно одну строку даже при гонке двух конкурентных регистраций
+    // с одним новым ИНН — DO NOTHING под READ COMMITTED в этой гонке вернул бы
+    // ноль строк, а последующий SELECT ничего бы не увидел (500). Само
+    // SET name = companies.name ничего не меняет — присоединяющийся сотрудник
+    // не должен переименовывать чужую компанию.
+    const auto company = co_await tx->execSqlCoro(
         "INSERT INTO companies (id, name, inn) VALUES ($1, $2, $3) "
-        "ON CONFLICT (inn) DO NOTHING RETURNING id",
+        "ON CONFLICT (inn) DO UPDATE SET name = companies.name RETURNING id",
         genUuid(), input.company_name, input.inn);
-    if (company.size() == 0) {
-      company = co_await tx->execSqlCoro("SELECT id FROM companies WHERE inn = $1",
-                                         input.inn);
-    }
     const auto company_id = company[0]["id"].as<std::string>();
 
     const auto user_id = genUuid();

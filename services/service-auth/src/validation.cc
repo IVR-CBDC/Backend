@@ -27,6 +27,14 @@ ValidationError error(std::string message) {
 
 }  // namespace
 
+void normalizeRegisterInput(RegisterInput &input) {
+  input.login = trim(input.login);
+  input.name = trim(input.name);
+  input.company_name = trim(input.company_name);
+  // password и inn не трогаем: inn уже проверяется как «только цифры»,
+  // а пароль — сырые байты пользователя.
+}
+
 std::optional<ValidationError> validateRegister(const RegisterInput &input) {
   if (trim(input.login).empty())
     return error("Укажите логин");

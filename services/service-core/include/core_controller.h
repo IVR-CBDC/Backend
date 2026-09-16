@@ -16,7 +16,7 @@ public:
   // @header Authorization: Bearer <token>
   // @body   {"n?": "integer"}
   // @200    {"user_id": "string", "input_n": "integer", "result": "integer"}
-  // @401    {"error": "string"}
+  // @401    {"code": "string", "error": "string"}
   ADD_METHOD_TO(CoreController::compute, "/api/core/compute", drogon::Post,
                 "common::JwtFilter");
 
@@ -24,7 +24,7 @@ public:
   // @summary Статус сервиса (защищённый)
   // @header Authorization: Bearer <token>
   // @200    {"user_id": "string", "status": "string", "uptime_sec": "integer"}
-  // @401    {"error": "string"}
+  // @401    {"code": "string", "error": "string"}
   ADD_METHOD_TO(CoreController::status, "/api/core/status", drogon::Get,
                 "common::JwtFilter");
   METHOD_LIST_END

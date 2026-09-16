@@ -11,8 +11,8 @@ public:
   // @summary Регистрация нового пользователя
   // @body   {"login": "string", "password": "string", "name?": "string", "company_name": "string", "inn": "string"}
   // @200    {"user_id": "string", "company_id": "string", "token": "string"}
-  // @400    {"error": "string"}
-  // @409    {"error": "string"}
+  // @400    {"code": "string", "error": "string"}
+  // @409    {"code": "string", "error": "string"}
   ADD_METHOD_TO(AuthController::registerUser, "/api/auth/register",
                 drogon::Post);
 
@@ -20,14 +20,15 @@ public:
   // @summary Авторизация, возвращает JWT
   // @body   {"login": "string", "password": "string"}
   // @200    {"user_id": "string", "company_id": "string", "token": "string"}
-  // @400    {"error": "string"}
-  // @401    {"error": "string"}
+  // @400    {"code": "string", "error": "string"}
+  // @401    {"code": "string", "error": "string"}
   ADD_METHOD_TO(AuthController::login, "/api/auth/login", drogon::Post);
 
   // @GET /api/auth/me
   // @summary Профиль текущего пользователя и его компания
   // @header Authorization: Bearer <token>
-  // @200    {"user_id": "string", "login": "string", "name": "string"}
+  // @200    {"user_id": "string", "login": "string", "name": "string", "company": "object"}
+  // company: {"id": "string", "name": "string", "inn": "string"}
   // @401    {"code": "string", "error": "string"}
   ADD_METHOD_TO(AuthController::me, "/api/auth/me", drogon::Get, "common::JwtFilter");
 

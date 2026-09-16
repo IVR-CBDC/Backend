@@ -3,6 +3,7 @@
 #include <validation.h>
 
 using auth_svc::RegisterInput;
+using auth_svc::normalizeRegisterInput;
 using auth_svc::validateRegister;
 
 namespace {
@@ -38,6 +39,17 @@ TEST_CASE("название компании обязательно") {
   auto error = validateRegister(input);
   REQUIRE(error.has_value());
   CHECK(error->message == "Укажите название компании");
+}
+
+TEST_CASE("normalizeRegisterInput обрезает пробелы у login, name, company_name") {
+  RegisterInput input{"  egor  ", "hunter22", "  Егор  ", "  ООО Ромашка  ", "7707083893"};
+  normalizeRegisterInput(input);
+
+  CHECK(input.login == "egor");
+  CHECK(input.name == "Егор");
+  CHECK(input.company_name == "ООО Ромашка");
+  CHECK(input.password == "hunter22");
+  CHECK(input.inn == "7707083893");
 }
 
 TEST_CASE("ИНН — ровно 10 цифр") {
