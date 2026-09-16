@@ -1,0 +1,8 @@
+[project]
+name = "ivr-api-tests"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["httpx>=0.28", "pytest>=8.4"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]

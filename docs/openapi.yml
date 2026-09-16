@@ -215,20 +215,11 @@ paths:
                   - service
                   - version
 
-  /api/core/compute:
-    post:
-      summary: "Вычисляет сумму 1..n (пример защищённой ручки)"
+  /api/core/deals:
+    get:
+      summary: "Список сделок компании"
       security:
         - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                n:
-                  type: integer
       responses:
         "200":
           description: "OK"
@@ -237,16 +228,13 @@ paths:
               schema:
                 type: object
                 properties:
-                  user_id:
+                  items:
                     type: string
-                  input_n:
-                    type: integer
-                  result:
+                  count:
                     type: integer
                 required:
-                  - user_id
-                  - input_n
-                  - result
+                  - items
+                  - count
         "401":
           description: "Unauthorized"
           content:
@@ -262,9 +250,9 @@ paths:
                   - code
                   - error
 
-  /api/core/status:
+  /api/core/deals/{id}:
     get:
-      summary: "Статус сервиса (защищённый)"
+      summary: "Сделка целиком: документы и таймлайн"
       security:
         - bearerAuth: []
       responses:
@@ -275,18 +263,212 @@ paths:
               schema:
                 type: object
                 properties:
-                  user_id:
+                  deal:
                     type: string
-                  status:
+                required:
+                  - deal
+        "404":
+          description: "Not Found"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
                     type: string
-                  uptime_sec:
+                  error:
+                    type: string
+                required:
+                  - code
+                  - error
+
+  /api/core/deals:
+    post:
+      summary: "Создание сделки"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                counterparty_country:
+                  type: string
+                counterparty_name:
+                  type: string
+                operation_type:
+                  type: string
+                amount:
+                  type: number
+                currency:
+                  type: string
+              required:
+                - counterparty_country
+                - counterparty_name
+                - operation_type
+                - amount
+                - currency
+      responses:
+        "201":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deal:
+                    type: string
+                required:
+                  - deal
+        "400":
+          description: "Bad Request"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  error:
+                    type: string
+                required:
+                  - code
+                  - error
+
+  /api/core/deals/{id}/scenario:
+    post:
+      summary: "Подтверждение сценария расчёта (комиссия пересчитывается на сервере)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scenario:
+                  type: string
+                version:
+                  type: integer
+              required:
+                - scenario
+                - version
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deal:
+                    type: string
+                required:
+                  - deal
+        "409":
+          description: "Conflict"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  error:
+                    type: string
+                required:
+                  - code
+                  - error
+
+  /api/core/deals/{dealId}/documents/{docId}/submit:
+    post:
+      summary: "Подача документа на проверку"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version:
+                  type: integer
+              required:
+                - version
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deal:
+                    type: string
+                required:
+                  - deal
+        "409":
+          description: "Conflict"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  error:
+                    type: string
+                required:
+                  - code
+                  - error
+
+  /api/core/notifications:
+    get:
+      summary: "Список уведомлений компании"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: string
+                  unread:
                     type: integer
                 required:
-                  - user_id
-                  - status
-                  - uptime_sec
+                  - items
+                  - unread
         "401":
           description: "Unauthorized"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  error:
+                    type: string
+                required:
+                  - code
+                  - error
+
+  /api/core/notifications/{id}/read:
+    post:
+      summary: "Отметить уведомление прочитанным"
+      security:
+        - bearerAuth: []
+      responses:
+        "404":
+          description: "Not Found"
           content:
             application/json:
               schema:

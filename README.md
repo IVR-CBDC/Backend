@@ -15,7 +15,7 @@
         ┌─────────▼────────┐  ┌──────────▼──────────┐  ┌────────▼──────────┐
         │  service-auth    │  │  service-core       │  │  service-commission │
         │  C++ / Drogon    │  │  C++ / Drogon       │  │  Python/FastAPI   │
-        │  пишет: ты       │  │  пишет: ты          │  │  комиссии/котировки │
+        │  пишет: ты       │  │  домен сделок       │  │  комиссии/котировки │
         │  pg-auth         │  │  pg-core            │  │  pg-commission      │
         │  ВЫПУСКАЕТ JWT   │  │  ВАЛИДИРУЕТ JWT     │  │  ВАЛИДИРУЕТ JWT   │
         │  (приват. ключ)  │  │  (публ. ключ)       │  │  (публ. ключ)     │
@@ -46,8 +46,9 @@ make test-login    # копируешь token из ответа
 
 export TOKEN=<твой токен>
 make test-me
-make test-core
 make smoke-commission
+make smoke-deal       # сквозная сделка: создать → сценарий → документы → эмулятор → completed
+make test-api         # pytest против поднятого стенда (EMULATOR_MANUAL=true)
 ```
 
 ## Структура
@@ -78,8 +79,14 @@ backend-platform/
 
 ### В service-core (C++)
 
-То же что в auth, но с `"core_svc::JwtFilter"` в `ADD_METHOD_TO` если нужна авторизация.
-`user_id` берёшь из `req->attributes()->get<std::string>("user_id")`.
+То же что в auth, но с `"common::JwtFilter"` в `ADD_METHOD_TO` если нужна авторизация
+(так у всех ручек домена сделок, кроме `/health` и внутренней `/internal/emulator/tick`).
+`company_id` берёшь из `req->attributes()->get<std::string>("company_id")` — им же
+фильтруются все выборки, чтобы чужая сделка выглядела как `404`, а не `403`. Ручки
+разложены по одной ответственности на файл под `src/core/` (`deals.cc`, `scenario.cc`,
+`documents.cc`, `notifications.cc`, ...), персистентность — через `DealRepository`
+(`repository.h`/`repository.cc`), переходы состояний — через чистый `DealStateMachine`
+(`state_machine.h`/`.cc`, без Drogon и БД, юнит-тестируется отдельно).
 
 ### В service-commission (Python)
 
@@ -110,6 +117,44 @@ backend-platform/
 Тесты C++ (Catch2, собираются только в workspace-сборке):
 
     make test-cpp
+
+## Домен сделки (план 03)
+
+`service-core` владеет полным жизненным циклом сделки: создание, выбор сценария расчёта
+(комиссия пересчитывается на сервере через `service-commission`, клиентское значение не
+доверяется), подача документов, автоматическое продвижение через комплаенс и расчёт до
+завершения. Вся логика переходов — чистый `DealStateMachine` (без Drogon/БД, Catch2), его
+результат применяет `DealRepository::apply` одной транзакцией (стадия, документы, таймлайн,
+уведомления, запись в outbox).
+
+Жизненный цикл (спека §4.2):
+
+```
+created ──выбор сценария──> documents ──все обязательные документы approved──> compliance_check
+                                                                                     │ эмулятор
+                                                                                     ▼
+                                                             settlement ──эмулятор──> completed
+любая из {documents, compliance_check, settlement} ──отказ──> blocked
+blocked ──устранение (переподача документа)──> возврат к стадии, откуда заблокировало
+```
+
+**Эмулятор внешних систем** — детерминированная замена банка/ФНС/расчётного рельса: тот же
+`DealRepository::apply`, что и у пользовательских ручек, поэтому произведённые им
+`deal.updated`/`notification.created` события неотличимы от настоящих. Исходы (одобрение
+документа, задержка комплаенса) — не случайны, а хэш от `(deal_id, kind)` (`fnv1a`), поэтому
+одна и та же сделка всегда ведёт себя одинаково — воспроизводимо для демо и тестов.
+Управляется переменными окружения:
+
+- `EMULATOR_SPEED` — `demo` (секунды, по умолчанию) или `realistic` (минуты).
+- `EMULATOR_MANUAL` — `true` отключает фоновый цикл и включает ручку
+  `POST /internal/emulator/tick` (без JWT, не публикуется наружу) для детерминированных
+  тестовых стендов; без неё маршрут не регистрируется вовсе.
+
+**События** — transactional outbox: `DealRepository::apply` пишет строки в `outbox` в той же
+транзакции, что и данные, паблишер (`runEvery(0.5s)`) публикует их в Redis-канал
+`deal-events:{company_id}` и отмечает `published_at`. Каждое сообщение несёт `seq`
+(= `outbox.id`) — уникальный идентификатор для дедупликации на стороне потребителя;
+доставка at-least-once, порядок `seq` **не гарантирован** между параллельными сделками.
 
 ## Что НЕ сделано (специально, для следующих итераций)
 

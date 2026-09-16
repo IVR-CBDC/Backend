@@ -1,4 +1,4 @@
-.PHONY: keys up down logs test-register test-login test-me test-core smoke-commission test-commission test-commission-db test-cpp lsp openapi \
+.PHONY: keys up down logs test-register test-login test-me smoke-commission test-commission test-commission-db test-cpp test-api smoke-deal lsp openapi \
        new-cpp new-python k3s-install k3s-import-images k3s-setup \
        k3s-build k3s-deploy k3s-deploy-data up-k3s down-k3s k3s-status \
        k3s-test-health k3s-test-auth k3s-test-core
@@ -37,13 +37,6 @@ test-me:
 	@if [ -z "$$TOKEN" ]; then echo "set TOKEN=..."; exit 1; fi
 	curl -s http://localhost/api/auth/me -H "Authorization: Bearer $$TOKEN" | jq
 
-test-core:
-	@if [ -z "$$TOKEN" ]; then echo "set TOKEN=..."; exit 1; fi
-	curl -s -X POST http://localhost/api/core/compute \
-		-H "Authorization: Bearer $$TOKEN" \
-		-H 'Content-Type: application/json' \
-		-d '{"n": 100}' | jq
-
 test-commission:
 	cd services/service-commission && uv run pytest -q -m "not db"
 
@@ -60,6 +53,20 @@ smoke-commission:
 		-X POST http://service-commission:8000/api/commission/quotes \
 		-H "Authorization: Bearer $$TOKEN" -H 'Content-Type: application/json' \
 		-d '{"from_country":"RU","to_country":"CN","currency":"CNY","amount":100000}'
+
+# Поднимает стенд в детерминированном режиме эмулятора (EMULATOR_MANUAL=true,
+# см. docker-compose.yml) и гоняет tests/api против него через проброшенные
+# порты 18080/18081.
+test-api:
+	EMULATOR_MANUAL=true docker compose up -d --build \
+		pg-auth migrate-auth service-auth \
+		pg-core migrate-core service-core \
+		pg-commission migrate-commission service-commission redis
+	cd tests/api && uv run --with httpx --with pytest pytest -q
+
+smoke-deal:
+	@if [ -z "$$TOKEN" ]; then echo "set TOKEN=..."; exit 1; fi
+	bash infra/smoke-deal.sh
 
 lsp:
 	cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -212,12 +219,13 @@ k3s-test-core:
 		-d '{"login":"testuser","password":"testpass123"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])") && \
 	echo "Token: $$TOKEN" && \
 	echo "" && \
-	echo "=== Compute (n=100) ===" && \
-	curl -s -X POST $(BASE_URL)/api/core/compute \
+	echo "=== Create deal ===" && \
+	curl -s -X POST $(BASE_URL)/api/core/deals \
 		-H 'Content-Type: application/json' \
 		-H "Authorization: Bearer $$TOKEN" \
-		-d '{"n":100}' | python3 -m json.tool && \
+		-d '{"counterparty_country":"CN","counterparty_name":"Trading Partner Co","operation_type":"import","amount":100000,"currency":"CNY"}' \
+		| python3 -m json.tool && \
 	echo "" && \
-	echo "=== Status ===" && \
-	curl -s $(BASE_URL)/api/core/status \
+	echo "=== List deals ===" && \
+	curl -s $(BASE_URL)/api/core/deals \
 		-H "Authorization: Bearer $$TOKEN" | python3 -m json.tool

@@ -53,6 +53,21 @@ public:
   ADD_METHOD_TO(CoreController::submitDocument,
                 "/api/core/deals/{dealId}/documents/{docId}/submit", drogon::Post,
                 "common::JwtFilter");
+
+  // @GET /api/core/notifications
+  // @summary Список уведомлений компании
+  // @header Authorization: Bearer <token>
+  // @200    {"items": "array", "unread": "integer"}
+  // @401    {"code": "string", "error": "string"}
+  ADD_METHOD_TO(CoreController::listNotifications, "/api/core/notifications?limit={limit}", drogon::Get,
+                "common::JwtFilter");
+
+  // @POST /api/core/notifications/{id}/read
+  // @summary Отметить уведомление прочитанным
+  // @header Authorization: Bearer <token>
+  // @404    {"code": "string", "error": "string"}
+  ADD_METHOD_TO(CoreController::markNotificationRead, "/api/core/notifications/{id}/read", drogon::Post,
+                "common::JwtFilter");
   METHOD_LIST_END
 
   drogon::Task<>
@@ -72,6 +87,12 @@ public:
   static drogon::Task<> submitDocument(drogon::HttpRequestPtr req,
                                        std::function<void(const drogon::HttpResponsePtr &)> cb,
                                        std::string dealId, std::string docId);
+  static drogon::Task<> listNotifications(drogon::HttpRequestPtr req,
+                                          std::function<void(const drogon::HttpResponsePtr &)> cb,
+                                          std::string limit);
+  static drogon::Task<> markNotificationRead(drogon::HttpRequestPtr req,
+                                             std::function<void(const drogon::HttpResponsePtr &)> cb,
+                                             std::string id);
 
   // Manual emulator tick: not part of METHOD_LIST_BEGIN/ADD_METHOD_TO above
   // — main.cc registers it directly via app().registerHandler(), and only

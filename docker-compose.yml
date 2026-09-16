@@ -154,6 +154,8 @@ services:
       SERVICE_PORT: "8080"
       JWT_PRIVATE_KEY_PATH: /etc/keys/jwt_private.jwk
       JWT_PUBLIC_KEY_PATH: /etc/keys/jwt_public.jwk
+    ports:
+      - "127.0.0.1:18080:8080"   # для tests/api (make test-api)
     volumes:
       - ./infra/keys:/etc/keys:ro
     depends_on:
@@ -179,6 +181,8 @@ services:
       EMULATOR_ENABLED: "true"
       EMULATOR_SPEED: demo
       EMULATOR_MANUAL: "${EMULATOR_MANUAL:-false}"
+    ports:
+      - "127.0.0.1:18081:8080"   # для tests/api (make test-api)
     volumes:
       - ./infra/keys/jwt_public.jwk:/etc/keys/jwt_public.jwk:ro
     depends_on:
