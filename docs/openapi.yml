@@ -172,7 +172,7 @@ paths:
                   name:
                     type: string
                   company:
-                    type: string
+                    type: object
                 required:
                   - user_id
                   - login
@@ -229,7 +229,7 @@ paths:
                 type: object
                 properties:
                   items:
-                    type: string
+                    type: array
                   count:
                     type: integer
                 required:
@@ -250,39 +250,6 @@ paths:
                   - code
                   - error
 
-  /api/core/deals/{id}:
-    get:
-      summary: "Сделка целиком: документы и таймлайн"
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: "OK"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  deal:
-                    type: string
-                required:
-                  - deal
-        "404":
-          description: "Not Found"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  code:
-                    type: string
-                  error:
-                    type: string
-                required:
-                  - code
-                  - error
-
-  /api/core/deals:
     post:
       summary: "Создание сделки"
       security:
@@ -319,11 +286,43 @@ paths:
                 type: object
                 properties:
                   deal:
-                    type: string
+                    type: object
                 required:
                   - deal
         "400":
           description: "Bad Request"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  error:
+                    type: string
+                required:
+                  - code
+                  - error
+
+  /api/core/deals/{id}:
+    get:
+      summary: "Сделка целиком: документы и таймлайн"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deal:
+                    type: object
+                required:
+                  - deal
+        "404":
+          description: "Not Found"
           content:
             application/json:
               schema:
@@ -365,7 +364,7 @@ paths:
                 type: object
                 properties:
                   deal:
-                    type: string
+                    type: object
                 required:
                   - deal
         "409":
@@ -408,7 +407,7 @@ paths:
                 type: object
                 properties:
                   deal:
-                    type: string
+                    type: object
                 required:
                   - deal
         "409":
@@ -440,7 +439,7 @@ paths:
                 type: object
                 properties:
                   items:
-                    type: string
+                    type: array
                   unread:
                     type: integer
                 required:

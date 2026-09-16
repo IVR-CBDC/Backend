@@ -23,6 +23,8 @@ to_oapi_type() {
     integer) echo "integer" ;;
     boolean) echo "boolean" ;;
     number)  echo "number" ;;
+    object)  echo "object" ;;
+    array)   echo "array" ;;
     *)       echo "string" ;;
   esac
 }
@@ -132,65 +134,81 @@ parse_headers() {
 
 
 generate_cpp_paths() {
-  local prev_path=""
-
+  # Groups ENDPOINTS by path before emitting anything, rather than emitting a
+  # new `path:` key whenever the path differs from the *previous* entry.
+  # ADD_METHOD_TO declarations for one path aren't always adjacent in the
+  # header (e.g. GET /api/core/deals, then GET /api/core/deals/{id}, then
+  # POST /api/core/deals) — adjacency-based grouping emitted the path key
+  # twice in that case, and a standard YAML parser silently keeps only the
+  # last one, dropping the first method's documentation entirely.
+  local -a ordered_paths=()
   for ep in "${ENDPOINTS[@]}"; do
-    IFS='|' read -r method path summary has_auth body responses <<< "$ep"
-    local method_lower
-    method_lower="$(echo "$method" | tr '[:upper:]' '[:lower:]')"
+    local path="${ep#*|}"
+    path="${path%%|*}"
+    local known=false
+    for existing in "${ordered_paths[@]+"${ordered_paths[@]}"}"; do
+      [[ "$existing" == "$path" ]] && { known=true; break; }
+    done
+    [[ "$known" == true ]] || ordered_paths+=("$path")
+  done
 
-    if [[ "$path" != "$prev_path" ]]; then
-      echo "  ${path}:"
-      prev_path="$path"
-    fi
+  for path in "${ordered_paths[@]+"${ordered_paths[@]}"}"; do
+    echo "  ${path}:"
 
-    echo "    ${method_lower}:"
-    if [[ -n "$summary" ]]; then
-      echo "      summary: \"${summary}\""
-    fi
+    for ep in "${ENDPOINTS[@]}"; do
+      IFS='|' read -r method ep_path summary has_auth body responses <<< "$ep"
+      [[ "$ep_path" == "$path" ]] || continue
+      local method_lower
+      method_lower="$(echo "$method" | tr '[:upper:]' '[:lower:]')"
 
-    if [[ "$has_auth" == true ]]; then
-      echo "      security:"
-      echo "        - bearerAuth: []"
-    fi
+      echo "    ${method_lower}:"
+      if [[ -n "$summary" ]]; then
+        echo "      summary: \"${summary}\""
+      fi
 
-    if [[ -n "$body" ]]; then
-      echo "      requestBody:"
-      echo "        required: true"
-      echo "        content:"
-      echo "          application/json:"
-      echo "            schema:"
-      emit_schema "$body" "              "
-    fi
+      if [[ "$has_auth" == true ]]; then
+        echo "      security:"
+        echo "        - bearerAuth: []"
+      fi
 
-    echo "      responses:"
-    if [[ -n "$responses" ]]; then
-      IFS=';' read -ra resp_arr <<< "$responses"
-      for resp in "${resp_arr[@]}"; do
-        [[ -z "$resp" ]] && continue
-        local code="${resp%%=*}"
-        local schema="${resp#*=}"
+      if [[ -n "$body" ]]; then
+        echo "      requestBody:"
+        echo "        required: true"
+        echo "        content:"
+        echo "          application/json:"
+        echo "            schema:"
+        emit_schema "$body" "              "
+      fi
 
-        local desc="OK"
-        case "$code" in
-          400) desc="Bad Request" ;;
-          401) desc="Unauthorized" ;;
-          403) desc="Forbidden" ;;
-          404) desc="Not Found" ;;
-          409) desc="Conflict" ;;
-          500) desc="Internal Server Error" ;;
-        esac
+      echo "      responses:"
+      if [[ -n "$responses" ]]; then
+        IFS=';' read -ra resp_arr <<< "$responses"
+        for resp in "${resp_arr[@]}"; do
+          [[ -z "$resp" ]] && continue
+          local code="${resp%%=*}"
+          local schema="${resp#*=}"
 
-        echo "        \"${code}\":"
-        echo "          description: \"${desc}\""
-        echo "          content:"
-        echo "            application/json:"
-        echo "              schema:"
-        emit_schema "$schema" "                "
-      done
-    fi
+          local desc="OK"
+          case "$code" in
+            400) desc="Bad Request" ;;
+            401) desc="Unauthorized" ;;
+            403) desc="Forbidden" ;;
+            404) desc="Not Found" ;;
+            409) desc="Conflict" ;;
+            500) desc="Internal Server Error" ;;
+          esac
 
-    echo ""
+          echo "        \"${code}\":"
+          echo "          description: \"${desc}\""
+          echo "          content:"
+          echo "            application/json:"
+          echo "              schema:"
+          emit_schema "$schema" "                "
+        done
+      fi
+
+      echo ""
+    done
   done
 }
 

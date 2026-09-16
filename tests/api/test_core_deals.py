@@ -11,7 +11,7 @@ import time
 
 import httpx
 
-DISPLAY_ID_RE = re.compile(r"^DEAL-\d{4}-\d+$")
+DISPLAY_ID_RE = re.compile(r"^DEAL-\d{4}-\d{4,}$")
 
 # Mirrors services/service-core/src/emulator.cc's fnv1a/documentApproved
 # exactly: the emulator's document verdict is a deterministic function of
