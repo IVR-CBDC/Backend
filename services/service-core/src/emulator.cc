@@ -64,7 +64,11 @@ bool emulatorEnabled() { return envFlag("EMULATOR_ENABLED", true); }
 
 bool emulatorManual() { return envFlag("EMULATOR_MANUAL", false); }
 
-bool documentApproved(std::string_view deal_id, std::string_view kind) {
+bool documentApproved(std::string_view deal_id, std::string_view kind, int attempt) {
+  // attempt 1 (and beyond) always succeeds — see emulator.h's comment: the
+  // demo must show recovery, and re-rejecting a resubmission would leave the
+  // user with no lever to unblock the deal at all.
+  if (attempt >= 1) return true;
   const std::string key = std::string(deal_id) + ":" + std::string(kind);
   return fnv1a(key) % 10 != 0;
 }
@@ -93,6 +97,7 @@ struct DueDocument {
   std::string kind;
   std::string status;
   std::string company_id;
+  int submit_count;
 };
 
 struct DueDeal {
@@ -150,7 +155,12 @@ Task<bool> reviewDocument(const EmulatorConfig &cfg, const DueDocument &doc) {
     co_return false;
   }
 
-  const bool approved = documentApproved(doc.deal_id, doc.kind);
+  // submit_count is incremented by apply() at the moment this very
+  // submission set the document to `uploaded` (see repository.cc), so by the
+  // time the tick reviews it, submit_count - 1 is the number of *prior*
+  // submissions of this kind — exactly the `attempt` documentApproved wants.
+  const int attempt = doc.submit_count > 0 ? doc.submit_count - 1 : 0;
+  const bool approved = documentApproved(doc.deal_id, doc.kind, attempt);
   const std::string reason = approved ? "" : documentRejectReason(doc.deal_id, doc.kind);
 
   auto transitionResult = onDocumentReviewed(toDealState(*detail), doc.kind, approved, reason);
@@ -193,14 +203,25 @@ Task<bool> advanceComplianceCheck(const EmulatorConfig &cfg, const DueDeal &deal
     // deadline out, and leave the deal in compliance_check. The next tick
     // that finds this deal due will see alreadyDelayed == true and fall
     // through to approval below instead of delaying it again.
-    auto db = app().getDbClient();
-    co_await db->execSqlCoro(
-        "UPDATE timeline_events SET status = 'delayed', delay_reason = $1, "
-        "  started_at = COALESCE(started_at, now()) "
-        "WHERE deal_id = $2::uuid AND seq = $3::int",
-        std::string("Ожидаем ответ от ФНС"), deal.id, kFnsStepSeq);
-    co_await scheduleDealAction(db, deal.id, cfg.compliance_sec);
-    co_return true;
+    //
+    // Routed through onComplianceDelayed/apply() (F4) rather than raw
+    // UPDATEs: this used to bypass versioning and eventing entirely (no
+    // deal.updated, no updated_at/version bump), the only write path in the
+    // system that did.
+    auto transitionResult = onComplianceDelayed(toDealState(*detail));
+    if (std::holds_alternative<TransitionError>(transitionResult)) {
+      LOG_ERROR << "emulator: onComplianceDelayed rejected deal " << deal.id << ": "
+                << std::get<TransitionError>(transitionResult).message;
+      co_return false;
+    }
+    const auto &delayTransition = std::get<Transition>(transitionResult);
+
+    DealMutation delayMutation;
+    delayMutation.next_action_in_sec = cfg.compliance_sec;
+
+    auto delayResult =
+        co_await DealRepository::apply(deal.id, deal.company_id, detail->deal.version, delayTransition, delayMutation);
+    co_return delayResult.status == ApplyResult::Status::ok;
   }
 
   auto transitionResult = onComplianceResult(toDealState(*detail), /*approved=*/true, "");
@@ -275,15 +296,17 @@ Task<int> Emulator::tickOnce() {
     // other. SKIP LOCKED still protects against two overlapping ticks
     // picking exactly the same row at the same instant.
     auto docRows = co_await db->execSqlCoro(
-        "SELECT d.id::text AS id, d.deal_id::text AS deal_id, d.kind, d.status, dl.company_id::text AS company_id "
+        "SELECT d.id::text AS id, d.deal_id::text AS deal_id, d.kind, d.status, dl.company_id::text AS company_id, "
+        "       d.submit_count "
         "FROM deal_documents d JOIN deals dl ON dl.id = d.deal_id "
         "WHERE d.next_action_at IS NOT NULL AND d.next_action_at <= now() "
         "FOR UPDATE OF d SKIP LOCKED LIMIT 50");
 
     std::vector<DueDocument> toReview;
     for (const auto &row : docRows) {
-      DueDocument doc{row["id"].as<std::string>(), row["deal_id"].as<std::string>(), row["kind"].as<std::string>(),
-                       row["status"].as<std::string>(), row["company_id"].as<std::string>()};
+      DueDocument doc{row["id"].as<std::string>(),      row["deal_id"].as<std::string>(),
+                       row["kind"].as<std::string>(),    row["status"].as<std::string>(),
+                       row["company_id"].as<std::string>(), row["submit_count"].as<int>()};
       if (doc.status == "uploaded") {
         co_await db->execSqlCoro(
             "UPDATE deal_documents SET status = 'under_review', "

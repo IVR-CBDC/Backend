@@ -286,10 +286,32 @@ Task<ApplyResult> DealRepository::apply(std::string deal_id, std::string company
         "  reject_reason = NULLIF($2, ''), "
         "  next_action_at = CASE WHEN $3::bigint IS NOT NULL THEN now() + ($3::bigint * interval '1 second') "
         "                        ELSE NULL END, "
+        // Counts submissions of this document (F2): every time a mutation
+        // uploads it, not just the first — this is what lets the emulator
+        // derive `attempt` and guarantee a resubmission is never rejected
+        // twice (see emulator.cc's documentApproved).
+        "  submit_count = CASE WHEN $1 = 'uploaded' THEN submit_count + 1 ELSE submit_count END, "
         "  updated_at = now() "
         "WHERE deal_id = $4::uuid AND kind = $5",
         std::string(toString(mutation.document_status.value_or(DocStatus::missing))), mutation.document_reject_reason,
         mutation.next_action_in_sec, deal_id, *mutation.document_kind);
+  }
+
+  if (transition.rearm_pending_documents && mutation.next_action_in_sec) {
+    // F3: a sibling document can be left stranded in uploaded/under_review
+    // with next_action_at cleared (see emulator.cc's clearDocumentAction)
+    // once a rejected document blocks the deal. Re-arm every such sibling
+    // now that a resubmission is unblocking the deal, using the same delay
+    // the resubmitted document itself just got (mutation.next_action_in_sec)
+    // — the excluded `kind` is the document this apply() call already just
+    // scheduled above, via the UPDATE right before this one.
+    co_await trans->execSqlCoro(
+        "UPDATE deal_documents SET "
+        "  next_action_at = now() + ($1::bigint * interval '1 second'), "
+        "  updated_at = now() "
+        "WHERE deal_id = $2::uuid AND status IN ('uploaded', 'under_review') "
+        "  AND kind <> COALESCE($3, '')",
+        mutation.next_action_in_sec, deal_id, mutation.document_kind);
   }
 
   if (mutation.scenario) {

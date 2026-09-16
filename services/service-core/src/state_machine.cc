@@ -93,8 +93,8 @@ TransitionResult onScenarioConfirmed(const DealState &deal) {
 }
 
 TransitionResult onDocumentSubmitted(const DealState &deal, const std::string &kind) {
-  const bool inDocumentsFlow =
-      deal.stage == Stage::documents || (deal.stage == Stage::blocked && deal.blocked_from == Stage::documents);
+  const bool wasBlocked = deal.stage == Stage::blocked && deal.blocked_from == Stage::documents;
+  const bool inDocumentsFlow = deal.stage == Stage::documents || wasBlocked;
   if (!inDocumentsFlow) return invalidTransition("Сделка не принимает документы на этой стадии");
 
   const DocumentState *doc = findDocument(deal, kind);
@@ -105,6 +105,11 @@ TransitionResult onDocumentSubmitted(const DealState &deal, const std::string &k
   Transition t;
   t.stage = Stage::documents;
   t.schedule_next = true;  // дальше документ проверяет эмулятор
+  // Unblocking resubmission: a sibling document may have been left stranded
+  // in uploaded/under_review with next_action_at cleared when the deal first
+  // blocked (see reviewDocument's clearDocumentAction in emulator.cc) — tell
+  // apply() to re-arm it now that the deal is moving again.
+  t.rearm_pending_documents = wasBlocked;
   return t;
 }
 
@@ -158,6 +163,22 @@ TransitionResult onComplianceResult(const DealState &deal, bool approved, const 
   t.stage = Stage::settlement;
   t.timeline = {{4, StepStatus::done, ""}, {5, StepStatus::done, ""}, {6, StepStatus::in_progress, ""}};
   t.schedule_next = true;  // дальше расчёт ведёт эмулятор
+  return t;
+}
+
+TransitionResult onComplianceDelayed(const DealState &deal) {
+  if (deal.stage != Stage::compliance_check)
+    return invalidTransition("Сделку можно поставить на паузу ФНС только во время комплаенс-проверки");
+
+  Transition t;
+  t.stage = Stage::compliance_check;  // стадия не меняется, это пауза внутри неё
+  // Step 5 ("Проверка ФНС") — see initialTimeline(). No notification: the
+  // pause is visible in the timeline (status delayed + delay_reason) and now
+  // fires a deal.updated event on its own (that's the whole point of this
+  // transition), so a separate notification would just be noise for
+  // something that resolves itself within compliance_sec.
+  t.timeline = {{5, StepStatus::delayed, "Ожидаем ответ от ФНС"}};
+  t.schedule_next = true;  // дальше комплаенс проверяет эмулятор ещё раз
   return t;
 }
 

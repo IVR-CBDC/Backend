@@ -31,6 +31,14 @@ struct Transition {
   std::vector<TimelineChange> timeline;
   std::vector<NotificationDraft> notifications;
   bool schedule_next = false;  // true when the emulator should act next
+  // True only for the blocked -> documents transition produced by
+  // onDocumentSubmitted (a resubmission that unblocks the deal): tells
+  // apply() to also re-arm next_action_at for every *other* document of this
+  // deal still sitting in uploaded/under_review, so a sibling that was
+  // stranded when the deal first blocked (see F3 in the plan-03 final
+  // review) gets picked up by the emulator again instead of sitting in
+  // under_review forever.
+  bool rearm_pending_documents = false;
 };
 
 struct TransitionError {
@@ -59,6 +67,12 @@ TransitionResult onDocumentSubmitted(const DealState &deal, const std::string &k
 TransitionResult onDocumentReviewed(const DealState &deal, const std::string &kind, bool approved,
                                      const std::string &reject_reason);
 TransitionResult onComplianceResult(const DealState &deal, bool approved, const std::string &reason);
+// Timeline-only pause on the "Проверка ФНС" step (seq 5), no stage change:
+// routes the emulator's compliance-delay branch through apply() like every
+// other transition, so it gets a deal.updated event, a version bump, and an
+// updated_at touch instead of bypassing all three (see F4 in the plan-03
+// final review). Only valid while the deal is in compliance_check.
+TransitionResult onComplianceDelayed(const DealState &deal);
 TransitionResult onSettlementDone(const DealState &deal);
 
 }  // namespace core_svc

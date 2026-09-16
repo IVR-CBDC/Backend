@@ -139,6 +139,17 @@ TEST_CASE("переподача отклонённого документа во
   CHECK(result.stage == Stage::documents);
   CHECK_FALSE(result.blocked_from.has_value());
   CHECK(result.schedule_next == true);
+  // F3: this is the transition that unblocks the deal — apply() must re-arm
+  // any sibling document stranded in uploaded/under_review.
+  CHECK(result.rearm_pending_documents == true);
+}
+
+TEST_CASE("обычная подача документа (не разблокирование) не просит переставить соседей") {
+  auto deal = dealInDocuments(Scenario::cbdc, DocStatus::missing);
+
+  const auto result = transition(onDocumentSubmitted(deal, "contract"));
+
+  CHECK(result.rearm_pending_documents == false);
 }
 
 TEST_CASE("успешный комплаенс переводит к расчёту") {
@@ -162,6 +173,29 @@ TEST_CASE("отказ комплаенса блокирует сделку") {
   CHECK(result.stage == Stage::blocked);
   CHECK(result.blocked_from == Stage::compliance_check);
   CHECK(result.blocker_reason == "ФНС не подтвердила контракт");
+}
+
+TEST_CASE("пауза ФНС оставляет сделку на комплаенс-проверке и помечает 5-й шаг") {
+  auto deal = dealInDocuments(Scenario::cbdc, DocStatus::approved);
+  deal.stage = Stage::compliance_check;
+  deal.timeline[2].status = StepStatus::done;
+  deal.timeline[3].status = StepStatus::in_progress;
+
+  const auto result = transition(onComplianceDelayed(deal));
+
+  CHECK(result.stage == Stage::compliance_check);
+  REQUIRE(result.timeline.size() == 1);
+  CHECK(result.timeline[0].seq == 5);
+  CHECK(result.timeline[0].status == StepStatus::delayed);
+  CHECK(result.timeline[0].delay_reason == "Ожидаем ответ от ФНС");
+  CHECK(result.schedule_next == true);
+  CHECK(result.notifications.empty());
+}
+
+TEST_CASE("паузу ФНС нельзя объявить вне комплаенс-проверки") {
+  auto deal = dealInDocuments(Scenario::cbdc, DocStatus::approved);
+
+  CHECK(error(onComplianceDelayed(deal)).code == "INVALID_TRANSITION");
 }
 
 TEST_CASE("завершение расчёта закрывает сделку") {

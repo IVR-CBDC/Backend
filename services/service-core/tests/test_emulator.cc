@@ -13,20 +13,30 @@ TEST_CASE("хэш стабилен и не зависит от прогона") 
   CHECK(fnv1a("deal-1") != fnv1a("deal-2"));
 }
 
-TEST_CASE("исход проверки документа детерминирован по сделке и виду документа") {
-  const bool first = documentApproved("11111111-1111-4111-8111-111111111111", "contract");
+TEST_CASE("исход проверки документа детерминирован по сделке, виду документа и попытке") {
+  const bool first = documentApproved("11111111-1111-4111-8111-111111111111", "contract", 0);
   for (int i = 0; i < 5; ++i)
-    CHECK(documentApproved("11111111-1111-4111-8111-111111111111", "contract") == first);
+    CHECK(documentApproved("11111111-1111-4111-8111-111111111111", "contract", 0) == first);
 }
 
-TEST_CASE("отказы редки, но случаются") {
+TEST_CASE("отказы на первой попытке редки, но случаются") {
   int rejected = 0;
   for (int i = 0; i < 200; ++i)
-    if (!documentApproved("deal-" + std::to_string(i), "contract"))
+    if (!documentApproved("deal-" + std::to_string(i), "contract", 0))
       ++rejected;
 
   CHECK(rejected > 0);
   CHECK(rejected < 60);  // ожидаем около 10%, ловим только грубые поломки
+}
+
+TEST_CASE("переподача (попытка 1) одобряется всегда") {
+  // Сделка должна быть решаема пользователем: если документ отклонён на
+  // попытке 0, попытка 1 обязана пройти — иначе переподача dead code (F2).
+  for (int i = 0; i < 200; ++i) {
+    const std::string deal_id = "deal-" + std::to_string(i);
+    if (documentApproved(deal_id, "contract", 0)) continue;  // интересен только отклонённый случай
+    CHECK(documentApproved(deal_id, "contract", 1));
+  }
 }
 
 TEST_CASE("причина отказа — осмысленный текст из фиксированного набора") {

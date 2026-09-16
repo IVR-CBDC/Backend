@@ -48,10 +48,17 @@ EmulatorConfig emulatorConfigFromEnv();
 bool emulatorEnabled();
 bool emulatorManual();
 
-// ~10% of documents are rejected, keyed by (deal_id, kind) so resubmitting
-// the *same* document kind under the same deal always gets the same
-// verdict within a single deal's lifetime scenario.
-bool documentApproved(std::string_view deal_id, std::string_view kind);
+// ~10% of first-time documents (attempt == 0) are rejected, keyed by
+// (deal_id, kind) so a given deal always gets the same verdict on its first
+// submission of a kind. `attempt` is the number of prior submissions of that
+// kind (0 for the first, 1 for a resubmission after rejection, ...) — see
+// deal_documents.submit_count (migrations/003_document_attempts.sql).
+//
+// attempt >= 1 always approves: the state machine explicitly supports
+// resubmitting a rejected document, and a user has no other lever to unblock
+// a deal — rejecting the same document twice would make the advertised
+// recovery flow dead code (see F2 in the plan-03 final review).
+bool documentApproved(std::string_view deal_id, std::string_view kind, int attempt);
 
 // Only meaningful when documentApproved() is false for the same arguments;
 // picks one of two plausible reasons, deterministically.
