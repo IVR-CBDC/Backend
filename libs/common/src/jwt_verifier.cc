@@ -24,6 +24,13 @@ int extract_claims(jwt_t *jwt, jwt_config_t *config) {
         claims->sub = jval.str_val;
 
     jval.type = JWT_VALUE_STR;
+    jval.name = "company_id";
+    jval.str_val = nullptr;
+    jval.error = JWT_VALUE_ERR_NONE;
+    if (jwt_claim_get(jwt, &jval) == JWT_VALUE_ERR_NONE && jval.str_val)
+        claims->company_id = jval.str_val;
+
+    jval.type = JWT_VALUE_STR;
     jval.name = "iss";
     jval.str_val = nullptr;
     jval.error = JWT_VALUE_ERR_NONE;
@@ -84,7 +91,8 @@ std::optional<Claims> JwtVerifier::verify(const std::string& token) {
     if (jwt_checker_verify(checker, token.c_str()) != 0)
         return std::nullopt;
 
-    if (c.sub.empty()) return std::nullopt;
+    // Токен без company_id бесполезен: все доменные данные разделены по юрлицу.
+    if (c.sub.empty() || c.company_id.empty()) return std::nullopt;
 
     return c;
 }

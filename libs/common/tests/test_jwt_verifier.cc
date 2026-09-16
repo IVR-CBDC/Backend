@@ -23,6 +23,24 @@ TEST_CASE("валидный токен разбирается и отдаёт su
   CHECK(claims->aud == "internal");
 }
 
+TEST_CASE("валидный токен отдаёт company_id") {
+  TokenSpec spec;
+  spec.sub = "user-1";
+  spec.company_id = "company-1";
+
+  auto claims = common::JwtVerifier::instance().verify(makeToken(kOwnKey, spec));
+
+  REQUIRE(claims.has_value());
+  CHECK(claims->company_id == "company-1");
+}
+
+TEST_CASE("токен без company_id отклоняется") {
+  TokenSpec spec;
+  spec.company_id = std::nullopt;
+
+  CHECK_FALSE(common::JwtVerifier::instance().verify(makeToken(kOwnKey, spec)).has_value());
+}
+
 TEST_CASE("чужая подпись отклоняется") {
   CHECK_FALSE(common::JwtVerifier::instance().verify(makeToken(kForeignKey)).has_value());
 }

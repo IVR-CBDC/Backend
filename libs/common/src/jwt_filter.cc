@@ -1,19 +1,10 @@
 #include "common/jwt_filter.h"
 #include "common/jwt_verifier.h"
+#include "common/helpers.h"
 
 #include <drogon/HttpResponse.h>
 
 namespace common {
-
-namespace {
-drogon::HttpResponsePtr unauthorized(const std::string &msg) {
-  Json::Value j;
-  j["error"] = msg;
-  auto r = drogon::HttpResponse::newHttpJsonResponse(j);
-  r->setStatusCode(drogon::k401Unauthorized);
-  return r;
-}
-}  // namespace
 
 void JwtFilter::doFilter(const drogon::HttpRequestPtr &req,
                          drogon::FilterCallback &&fcb,
@@ -22,18 +13,21 @@ void JwtFilter::doFilter(const drogon::HttpRequestPtr &req,
   constexpr std::string_view prefix = "Bearer ";
   if (auth.size() < prefix.size() ||
       std::string_view(auth).substr(0, prefix.size()) != prefix) {
-    fcb(unauthorized("missing bearer token"));
+    fcb(jsonError(drogon::k401Unauthorized, "UNAUTHORIZED",
+                  "Отсутствует токен авторизации"));
     return;
   }
 
   std::string token = auth.substr(prefix.size());
   auto claims = JwtVerifier::instance().verify(token);
   if (!claims) {
-    fcb(unauthorized("invalid or expired token"));
+    fcb(jsonError(drogon::k401Unauthorized, "INVALID_TOKEN",
+                  "Недействительный или истёкший токен"));
     return;
   }
 
   req->attributes()->insert("user_id", claims->sub);
+  req->attributes()->insert("company_id", claims->company_id);
   fccb();
 }
 

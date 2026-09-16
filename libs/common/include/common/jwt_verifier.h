@@ -7,7 +7,8 @@
 namespace common {
 
 struct Claims {
-    std::string sub;  // user_id
+    std::string sub;         // user_id
+    std::string company_id;  // юрлицо, от имени которого работает пользователь
     std::string iss;
     std::string aud;
 };

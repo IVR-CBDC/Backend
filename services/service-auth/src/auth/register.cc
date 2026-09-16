@@ -14,7 +14,7 @@ AuthController::registerUser(const HttpRequestPtr req,
 
   const auto json = req->getJsonObject();
   if (!json) {
-    cb(jsonError(k400BadRequest, "invalid json"));
+    cb(jsonError(k400BadRequest, "INVALID_JSON", "Некорректный JSON в теле запроса"));
     co_return;
   }
 
@@ -23,7 +23,7 @@ AuthController::registerUser(const HttpRequestPtr req,
   const std::string name = json->get("name", "").asString();
 
   if (login.empty() || password.size() < 6) {
-    cb(jsonError(k400BadRequest, "login required, password >= 6"));
+    cb(jsonError(k400BadRequest, "VALIDATION_ERROR", "Укажите логин и пароль не короче 6 символов"));
     co_return;
   }
 
@@ -33,7 +33,7 @@ AuthController::registerUser(const HttpRequestPtr req,
     const auto exists =
         co_await db->execSqlCoro("SELECT 1 FROM users WHERE login = $1", login);
     if (exists.size() > 0) {
-      cb(jsonError(k409Conflict, "user already exists"));
+      cb(jsonError(k409Conflict, "USER_EXISTS", "Пользователь с таким логином уже существует"));
       co_return;
     }
 
@@ -54,9 +54,9 @@ AuthController::registerUser(const HttpRequestPtr req,
 
   } catch (const orm::DrogonDbException &e) {
     LOG_ERROR << "register db error: " << e.base().what();
-    cb(jsonError(k500InternalServerError, "internal"));
+    cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
   } catch (const std::exception &e) {
     LOG_ERROR << "register error: " << e.what();
-    cb(jsonError(k500InternalServerError, "internal"));
+    cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
   }
 }

@@ -13,7 +13,7 @@ Task<> AuthController::login(HttpRequestPtr req,
 
   auto json = req->getJsonObject();
   if (!json) {
-    cb(jsonError(k400BadRequest, "invalid json"));
+    cb(jsonError(k400BadRequest, "INVALID_JSON", "Некорректный JSON в теле запроса"));
     co_return;
   }
 
@@ -26,7 +26,7 @@ Task<> AuthController::login(HttpRequestPtr req,
     auto rows = co_await db->execSqlCoro(
         "SELECT id, password_hash FROM users WHERE login = $1", login);
     if (rows.size() == 0) {
-      cb(jsonError(k401Unauthorized, "invalid credentials"));
+      cb(jsonError(k401Unauthorized, "INVALID_CREDENTIALS", "Неверный логин или пароль"));
       co_return;
     }
 
@@ -34,7 +34,7 @@ Task<> AuthController::login(HttpRequestPtr req,
     std::string pw_hash = rows[0]["password_hash"].as<std::string>();
 
     if (!verifyPassword(password, pw_hash)) {
-      cb(jsonError(k401Unauthorized, "invalid credentials"));
+      cb(jsonError(k401Unauthorized, "INVALID_CREDENTIALS", "Неверный логин или пароль"));
       co_return;
     }
 
@@ -46,9 +46,9 @@ Task<> AuthController::login(HttpRequestPtr req,
 
   } catch (const orm::DrogonDbException &e) {
     LOG_ERROR << "login db error: " << e.base().what();
-    cb(jsonError(k500InternalServerError, "internal"));
+    cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
   } catch (const std::exception &e) {
     LOG_ERROR << "login error: " << e.what();
-    cb(jsonError(k500InternalServerError, "internal"));
+    cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
   }
 }
