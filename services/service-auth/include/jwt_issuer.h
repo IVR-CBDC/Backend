@@ -10,7 +10,7 @@ public:
   static JwtIssuer &instance();
   ~JwtIssuer();
 
-  std::string issue(const std::string &user_id,
+  std::string issue(const std::string &user_id, const std::string &company_id,
                     int ttl_seconds = 7 * 24 * 3600);
 
 private:

@@ -36,13 +36,13 @@ target_include_directories(service_auth PRIVATE
 )
 
 target_link_libraries(service_auth PRIVATE
+  common
   Drogon::Drogon
   OpenSSL::SSL OpenSSL::Crypto
   PkgConfig::ARGON2
   PkgConfig::JWT
 )
 
-# Header-only usage of common — just need the include path
-target_include_directories(service_auth PRIVATE
-  $<TARGET_PROPERTY:common,INTERFACE_INCLUDE_DIRECTORIES>
-)
+if(BUILD_TESTS AND TARGET Catch2::Catch2WithMain)
+  add_subdirectory(tests)
+endif()

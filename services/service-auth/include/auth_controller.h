@@ -9,8 +9,8 @@ public:
   METHOD_LIST_BEGIN
   // @POST /api/auth/register
   // @summary Регистрация нового пользователя
-  // @body   {"login": "string", "password": "string", "name?": "string"}
-  // @200    {"user_id": "string", "token": "string"}
+  // @body   {"login": "string", "password": "string", "name?": "string", "company_name": "string", "inn": "string"}
+  // @200    {"user_id": "string", "company_id": "string", "token": "string"}
   // @400    {"error": "string"}
   // @409    {"error": "string"}
   ADD_METHOD_TO(AuthController::registerUser, "/api/auth/register",
@@ -19,7 +19,7 @@ public:
   // @POST /api/auth/login
   // @summary Авторизация, возвращает JWT
   // @body   {"login": "string", "password": "string"}
-  // @200    {"user_id": "string", "token": "string"}
+  // @200    {"user_id": "string", "company_id": "string", "token": "string"}
   // @400    {"error": "string"}
   // @401    {"error": "string"}
   ADD_METHOD_TO(AuthController::login, "/api/auth/login", drogon::Post);

@@ -2,6 +2,7 @@
 #include "helpers.h"
 #include "jwt_issuer.h"
 #include "password.h"
+#include "validation.h"
 
 #include <drogon/drogon.h>
 
@@ -18,37 +19,55 @@ AuthController::registerUser(const HttpRequestPtr req,
     co_return;
   }
 
-  const std::string login = (*json)["login"].asString();
-  const std::string password = (*json)["password"].asString();
-  const std::string name = json->get("name", "").asString();
+  const RegisterInput input{
+      (*json)["login"].asString(),
+      (*json)["password"].asString(),
+      json->get("name", "").asString(),
+      (*json)["company_name"].asString(),
+      (*json)["inn"].asString(),
+  };
 
-  if (login.empty() || password.size() < 6) {
-    cb(jsonError(k400BadRequest, "VALIDATION_ERROR", "Укажите логин и пароль не короче 6 символов"));
+  if (const auto invalid = validateRegister(input)) {
+    cb(jsonError(k400BadRequest, invalid->code, invalid->message));
     co_return;
   }
 
   const auto db = app().getDbClient();
 
   try {
+    auto tx = co_await db->newTransactionCoro();
+
     const auto exists =
-        co_await db->execSqlCoro("SELECT 1 FROM users WHERE login = $1", login);
+        co_await tx->execSqlCoro("SELECT 1 FROM users WHERE login = $1", input.login);
     if (exists.size() > 0) {
-      cb(jsonError(k409Conflict, "USER_EXISTS", "Пользователь с таким логином уже существует"));
+      cb(jsonError(k409Conflict, "USER_EXISTS",
+                   "Пользователь с таким логином уже существует"));
       co_return;
     }
 
-    auto user_id = genUuid();
-    auto hash = hashPassword(password);
+    // Компания заводится один раз на ИНН: второй сотрудник того же юрлица
+    // присоединяется к существующей записи, а не создаёт дубль.
+    auto company = co_await tx->execSqlCoro(
+        "INSERT INTO companies (id, name, inn) VALUES ($1, $2, $3) "
+        "ON CONFLICT (inn) DO NOTHING RETURNING id",
+        genUuid(), input.company_name, input.inn);
+    if (company.size() == 0) {
+      company = co_await tx->execSqlCoro("SELECT id FROM companies WHERE inn = $1",
+                                         input.inn);
+    }
+    const auto company_id = company[0]["id"].as<std::string>();
 
-    co_await db->execSqlCoro(
-        "INSERT INTO users (id, login, password_hash, name) "
-        "VALUES ($1, $2, $3, $4)",
-        user_id, login, hash, name);
+    const auto user_id = genUuid();
+    co_await tx->execSqlCoro(
+        "INSERT INTO users (id, login, password_hash, name, company_id) "
+        "VALUES ($1, $2, $3, $4, $5)",
+        user_id, input.login, hashPassword(input.password), input.name, company_id);
 
-    const auto token = JwtIssuer::instance().issue(user_id);
+    const auto token = JwtIssuer::instance().issue(user_id, company_id);
 
     Json::Value out;
     out["user_id"] = user_id;
+    out["company_id"] = company_id;
     out["token"] = token;
     cb(HttpResponse::newHttpJsonResponse(out));
 

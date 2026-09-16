@@ -34,6 +34,8 @@ services:
       POSTGRES_USER: auth
       POSTGRES_PASSWORD: auth
       POSTGRES_DB: auth
+    ports:
+      - "127.0.0.1:5433:5432"   # для ручной отладки и api-тестов
     volumes:
       - pg_auth_data:/var/lib/postgresql/data
     healthcheck:

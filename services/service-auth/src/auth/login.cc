@@ -24,7 +24,7 @@ Task<> AuthController::login(HttpRequestPtr req,
 
   try {
     auto rows = co_await db->execSqlCoro(
-        "SELECT id, password_hash FROM users WHERE login = $1", login);
+        "SELECT id, password_hash, company_id FROM users WHERE login = $1", login);
     if (rows.size() == 0) {
       cb(jsonError(k401Unauthorized, "INVALID_CREDENTIALS", "Неверный логин или пароль"));
       co_return;
@@ -32,15 +32,17 @@ Task<> AuthController::login(HttpRequestPtr req,
 
     std::string user_id = rows[0]["id"].as<std::string>();
     std::string pw_hash = rows[0]["password_hash"].as<std::string>();
+    std::string company_id = rows[0]["company_id"].as<std::string>();
 
     if (!verifyPassword(password, pw_hash)) {
       cb(jsonError(k401Unauthorized, "INVALID_CREDENTIALS", "Неверный логин или пароль"));
       co_return;
     }
 
-    auto token = JwtIssuer::instance().issue(user_id);
+    auto token = JwtIssuer::instance().issue(user_id, company_id);
     Json::Value out;
     out["user_id"] = user_id;
+    out["company_id"] = company_id;
     out["token"] = token;
     cb(HttpResponse::newHttpJsonResponse(out));
 
