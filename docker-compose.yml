@@ -178,6 +178,7 @@ services:
       COMMISSION_URL: "http://service-commission:8000"
       EMULATOR_ENABLED: "true"
       EMULATOR_SPEED: demo
+      EMULATOR_MANUAL: "${EMULATOR_MANUAL:-false}"
     volumes:
       - ./infra/keys/jwt_public.jwk:/etc/keys/jwt_public.jwk:ro
     depends_on:

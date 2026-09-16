@@ -72,6 +72,13 @@ public:
   static drogon::Task<> submitDocument(drogon::HttpRequestPtr req,
                                        std::function<void(const drogon::HttpResponsePtr &)> cb,
                                        std::string dealId, std::string docId);
+
+  // Manual emulator tick: not part of METHOD_LIST_BEGIN/ADD_METHOD_TO above
+  // — main.cc registers it directly via app().registerHandler(), and only
+  // when EMULATOR_MANUAL=true, so the route doesn't exist at all otherwise.
+  // Internal-only (no JWT, not exposed through Traefik).
+  static drogon::Task<> tickEmulator(drogon::HttpRequestPtr req,
+                                     std::function<void(const drogon::HttpResponsePtr &)> cb);
 };
 
 } // namespace core_svc
