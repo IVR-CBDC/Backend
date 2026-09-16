@@ -20,5 +20,8 @@ Task<> CoreController::tickEmulator(HttpRequestPtr, std::function<void(const Htt
   } catch (const std::exception &e) {
     LOG_ERROR << "tickEmulator error: " << e.what();
     cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
+  } catch (...) {
+    LOG_ERROR << "tickEmulator error: unknown exception";
+    cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
   }
 }

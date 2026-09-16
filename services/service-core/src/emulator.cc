@@ -114,13 +114,12 @@ Task<> scheduleDealAction(std::shared_ptr<orm::DbClient> db, const std::string &
       deal_id);
 }
 
-// Same idea as scheduleDealAction but for a single deal_documents row —
-// used by reviewDocument() to push a stuck document's retry out instead of
-// hammering it every tick (see the Stage::documents guard there).
-Task<> scheduleDocumentAction(std::shared_ptr<orm::DbClient> db, const std::string &document_id, long long delay_sec) {
-  co_await db->execSqlCoro(
-      "UPDATE deal_documents SET next_action_at = now() + ($1::bigint * interval '1 second') WHERE id = $2::uuid",
-      delay_sec, document_id);
+// Clears a document's next_action_at without touching its status — used by
+// reviewDocument() when the document can no longer be usefully reviewed
+// (see the Stage::documents guard there): stops the tick from picking the
+// row up again, without pretending a review happened.
+Task<> clearDocumentAction(std::shared_ptr<orm::DbClient> db, const std::string &document_id) {
+  co_await db->execSqlCoro("UPDATE deal_documents SET next_action_at = NULL WHERE id = $1::uuid", document_id);
 }
 
 // Reviews one under_review document: decides the verdict deterministically,
@@ -136,12 +135,18 @@ Task<bool> reviewDocument(const EmulatorConfig &cfg, const DueDocument &doc) {
   if (detail->deal.stage != Stage::documents) {
     // The deal left `documents` before this tick got to review doc (most
     // commonly: a sibling document, reviewed earlier in this same tick or a
-    // previous one, was rejected and blocked the deal first). Calling
-    // onDocumentReviewed here would just reject the transition every single
-    // tick forever, spamming errors — push the retry out by a full
-    // doc_review_sec instead, so `doc` is revisited (silently) once the
-    // deal is unblocked, without hammering the DB/logs in the meantime.
-    co_await scheduleDocumentAction(app().getDbClient(), doc.id, cfg.doc_review_sec);
+    // previous one, was rejected and blocked the deal first). Nothing in
+    // this system moves the deal back to `documents` on its own — only a
+    // user resubmitting the *rejected* document does, and that resubmission
+    // goes through onDocumentSubmitted/apply (documents.cc), which sets its
+    // own next_action_at independently of this row. So retrying `doc` is
+    // never going to succeed on its own: treat it as terminal (clear
+    // next_action_at, leave status as under_review) rather than looping —
+    // rescheduling would just re-hit this same branch forever and leave the
+    // document stuck in a UI-visible "под проверкой" limbo indefinitely.
+    LOG_INFO << "emulator: leaving document " << doc.id << " (deal " << doc.deal_id
+             << ") unreviewed — deal left stage=documents before its turn";
+    co_await clearDocumentAction(app().getDbClient(), doc.id);
     co_return false;
   }
 

@@ -63,6 +63,20 @@ Task<int> OutboxPublisher::publishOnce() {
   // but before COMMIT, the rows stay unpublished and are republished next
   // run. The BFF/UI dedupe on `seq` (the outbox row id), so a repeat is
   // harmless.
+  //
+  // `seq` is NOT a delivery-order guarantee, only a unique delivery id.
+  // `outbox.id` (a bigserial) is assigned at INSERT time, but a row only
+  // becomes visible to this SELECT once its own transaction COMMITs — and
+  // two overlapping DealRepository::apply() transactions can commit in
+  // either order regardless of which one inserted its outbox row (and got
+  // its id) first. So a consumer can observe a higher `seq` before a lower
+  // one. This is fine because every payload here is just a refetch trigger
+  // (`deal.updated`/`notification.created` carry no state of their own —
+  // the consumer always re-reads the deal from service-core), so ordering
+  // doesn't matter; consumers must de-duplicate retried deliveries by
+  // remembering the set of `seq` values already seen, never by comparing
+  // against a highest-seq-so-far watermark (that would drop a legitimately
+  // out-of-order, not-yet-seen event).
   auto rows = co_await trans->execSqlCoro(
       "SELECT id, company_id::text AS company_id, payload FROM outbox "
       "WHERE published_at IS NULL ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 100");

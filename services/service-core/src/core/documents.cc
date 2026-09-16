@@ -1,9 +1,9 @@
 #include "core_controller.h"
+#include "emulator.h"
 #include "repository.h"
 
 #include <algorithm>
 #include <common/helpers.h>
-#include <cstdlib>
 #include <drogon/drogon.h>
 
 using namespace core_svc;
@@ -18,19 +18,6 @@ bool parseVersion(const Json::Value &body, int &out) {
   if (v < 0) return false;
   out = v;
   return true;
-}
-
-// Delay before the emulator reviews a submitted document. Task 5 moves this
-// to EmulatorConfig::doc_review_sec; reading the env var here keeps that a
-// one-line change later instead of threading a config object through today.
-long long docReviewDelaySec() {
-  const char *env = std::getenv("EMULATOR_DOC_DELAY_SEC");
-  if (!env || !*env) return 5;
-  try {
-    return std::stoll(env);
-  } catch (...) {
-    return 5;
-  }
 }
 
 }  // namespace
@@ -82,7 +69,11 @@ Task<> CoreController::submitDocument(HttpRequestPtr req, std::function<void(con
     DealMutation mutation;
     mutation.document_kind = docIt->kind;
     mutation.document_status = DocStatus::uploaded;
-    mutation.next_action_in_sec = docReviewDelaySec();
+    // Same delay the emulator itself uses for the uploaded -> under_review
+    // step (EmulatorConfig::doc_review_sec, driven by EMULATOR_SPEED) — this
+    // used to read its own EMULATOR_DOC_DELAY_SEC var, which silently
+    // ignored EMULATOR_SPEED=realistic.
+    mutation.next_action_in_sec = emulatorConfigFromEnv().doc_review_sec;
 
     auto result = co_await DealRepository::apply(dealId, company_id, version, transition, mutation);
     if (result.status == ApplyResult::Status::not_found) {
