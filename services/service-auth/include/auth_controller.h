@@ -24,6 +24,12 @@ public:
   // @401    {"error": "string"}
   ADD_METHOD_TO(AuthController::login, "/api/auth/login", drogon::Post);
 
+  // @GET /api/auth/me
+  // @summary Профиль текущего пользователя и его компания
+  // @header Authorization: Bearer <token>
+  // @200    {"user_id": "string", "login": "string", "name": "string"}
+  // @401    {"code": "string", "error": "string"}
+  ADD_METHOD_TO(AuthController::me, "/api/auth/me", drogon::Get, "common::JwtFilter");
 
   // @GET /health
   // @summary Health check service-auth
@@ -41,6 +47,8 @@ public:
   static drogon::Task<> login(drogon::HttpRequestPtr req,
                        std::function<void(const drogon::HttpResponsePtr &)> cb);
 
+  static drogon::Task<> me(drogon::HttpRequestPtr req,
+                           std::function<void(const drogon::HttpResponsePtr &)> cb);
 
   static drogon::Task<>
   health(drogon::HttpRequestPtr req,

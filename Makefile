@@ -1,4 +1,4 @@
-.PHONY: keys up down logs test-register test-login test-core smoke-commission test-commission test-commission-db test-cpp lsp openapi \
+.PHONY: keys up down logs test-register test-login test-me test-core smoke-commission test-commission test-commission-db test-cpp lsp openapi \
        new-cpp new-python k3s-install k3s-import-images k3s-setup \
        k3s-build k3s-deploy k3s-deploy-data up-k3s down-k3s k3s-status \
        k3s-test-health k3s-test-auth k3s-test-core
@@ -26,12 +26,16 @@ logs:
 test-register:
 	curl -s -X POST http://localhost/api/auth/register \
 		-H 'Content-Type: application/json' \
-		-d '{"login":"egor","password":"hunter2","name":"Egor"}' | jq
+		-d '{"login":"egor","password":"hunter22","name":"Егор","company_name":"ООО Ромашка","inn":"7707083893"}' | jq
 
 test-login:
 	curl -s -X POST http://localhost/api/auth/login \
 		-H 'Content-Type: application/json' \
-		-d '{"login":"egor","password":"hunter2"}' | jq
+		-d '{"login":"egor","password":"hunter22"}' | jq
+
+test-me:
+	@if [ -z "$$TOKEN" ]; then echo "set TOKEN=..."; exit 1; fi
+	curl -s http://localhost/api/auth/me -H "Authorization: Bearer $$TOKEN" | jq
 
 test-core:
 	@if [ -z "$$TOKEN" ]; then echo "set TOKEN=..."; exit 1; fi
@@ -194,7 +198,7 @@ k3s-test-auth:
 	@echo "=== Register ===" && \
 	curl -s -X POST $(BASE_URL)/api/auth/register \
 		-H 'Content-Type: application/json' \
-		-d '{"login":"testuser","password":"testpass123","name":"Test User"}' | python3 -m json.tool && \
+		-d '{"login":"testuser","password":"testpass123","name":"Test User","company_name":"ООО Тест","inn":"7710137066"}' | python3 -m json.tool && \
 	echo "" && \
 	echo "=== Login ===" && \
 	curl -s -X POST $(BASE_URL)/api/auth/login \

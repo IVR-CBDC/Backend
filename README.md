@@ -28,6 +28,8 @@
 2. **No inter-service sync calls** — сервисы не зовут друг друга по сети ради CRUD.
 3. **JWT с RS256** — auth выпускает приватным ключом, остальные валидируют публичным локально (без сети).
 4. **Traefik как единая точка входа** — фронт ходит в `localhost`, не знает про внутреннее устройство.
+5. **Пользователь = сотрудник юрлица** — `company_id` едет в JWT, поэтому core и
+   commission разделяют данные по компании, не обращаясь в auth по сети.
 
 ## Quick start
 
@@ -43,6 +45,7 @@ make test-register
 make test-login    # копируешь token из ответа
 
 export TOKEN=<твой токен>
+make test-me
 make test-core
 make smoke-commission
 ```
@@ -84,12 +87,21 @@ backend-platform/
 ручки — `app/api.py` внутри `create_router`. Авторизация — зависимость `User` (JWT, возвращает `sub`).
 Миграции — `migrations/NNN_*.sql`. Тесты: `make test-commission` и `make test-commission-db`.
 
+## Ломающее изменение: компании (план 02)
+
+Регистрация требует `company_name` и `inn` (10 цифр). Пользователи с одинаковым ИНН
+попадают в одну компанию. В JWT добавлен claim `company_id`, и токены **без него
+считаются невалидными** — выданные раньше токены нужно перевыпустить (повторный логин).
+Ошибки C++-сервисов отдаются в формате `{"code": "...", "error": "..."}`.
+
+Тесты C++ (Catch2, собираются только в workspace-сборке):
+
+    make test-cpp
+
 ## Что НЕ сделано (специально, для следующих итераций)
 
-- `service-auth/me` парсит JWT — пока заглушка, нужно использовать тот же verifier что в service-core
 - Метрики Prometheus (`/metrics`)
 - Structured logging (slog-style)
-- Тесты Catch2 для C++
 - mTLS между сервисами (на случай когда они таки начнут общаться)
 - k3s манифесты (Deployment, Service, Ingress, StatefulSet для Postgres)
 - HTTPS на Traefik с Let's Encrypt
