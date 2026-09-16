@@ -66,9 +66,12 @@ paths:
               schema:
                 type: object
                 properties:
+                  code:
+                    type: string
                   error:
                     type: string
                 required:
+                  - code
                   - error
         "409":
           description: "Conflict"
@@ -77,9 +80,12 @@ paths:
               schema:
                 type: object
                 properties:
+                  code:
+                    type: string
                   error:
                     type: string
                 required:
+                  - code
                   - error
 
   /api/auth/login:
@@ -124,9 +130,12 @@ paths:
               schema:
                 type: object
                 properties:
+                  code:
+                    type: string
                   error:
                     type: string
                 required:
+                  - code
                   - error
         "401":
           description: "Unauthorized"
@@ -135,9 +144,12 @@ paths:
               schema:
                 type: object
                 properties:
+                  code:
+                    type: string
                   error:
                     type: string
                 required:
+                  - code
                   - error
 
   /api/auth/me:
@@ -159,10 +171,13 @@ paths:
                     type: string
                   name:
                     type: string
+                  company:
+                    type: string
                 required:
                   - user_id
                   - login
                   - name
+                  - company
         "401":
           description: "Unauthorized"
           content:
@@ -239,9 +254,12 @@ paths:
               schema:
                 type: object
                 properties:
+                  code:
+                    type: string
                   error:
                     type: string
                 required:
+                  - code
                   - error
 
   /api/core/status:
@@ -274,9 +292,12 @@ paths:
               schema:
                 type: object
                 properties:
+                  code:
+                    type: string
                   error:
                     type: string
                 required:
+                  - code
                   - error
 
   /api/commission/calculate:
