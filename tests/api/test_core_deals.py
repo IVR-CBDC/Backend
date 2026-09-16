@@ -11,15 +11,17 @@ import time
 
 import httpx
 
+from conftest import outbox_published_event
+
 DISPLAY_ID_RE = re.compile(r"^DEAL-\d{4}-\d{4,}$")
 
 # Mirrors services/service-core/src/emulator.cc's fnv1a/documentApproved
-# exactly: the emulator's document verdict is a deterministic function of
-# (deal_id, kind) with no retry — a document that hashes to "rejected" for a
-# given deal_id stays rejected forever for that deal. Since deal_id is a
-# server-generated UUID we can't choose, the completion test instead predicts
-# the verdict client-side and keeps creating deals until it draws one where
-# every required document is going to be approved.
+# exactly, attempt included: the emulator's verdict for attempt 0 is a
+# deterministic function of (deal_id, kind); attempt >= 1 (a resubmission)
+# always approves — that's the whole point of F2, the recovery flow this
+# module's main test exercises. Since deal_id is a server-generated UUID we
+# can't choose, tests instead predict the verdict client-side and draw deals
+# until they get the combination they want to exercise.
 _FNV_OFFSET = 14695981039346656037
 _FNV_PRIME = 1099511628211
 _MASK64 = (1 << 64) - 1
@@ -33,7 +35,9 @@ def _fnv1a(data: bytes) -> int:
     return h
 
 
-def _document_approved(deal_id: str, kind: str) -> bool:
+def _document_approved(deal_id: str, kind: str, attempt: int = 0) -> bool:
+    if attempt >= 1:
+        return True
     return _fnv1a(f"{deal_id}:{kind}".encode()) % 10 != 0
 
 
@@ -75,6 +79,29 @@ def tick_emulator(core_url: str) -> int:
 
 def get_deal(core_url: str, token: str, deal_id: str) -> httpx.Response:
     return httpx.get(f"{core_url}/api/core/deals/{deal_id}", headers=auth_headers(token), timeout=10.0)
+
+
+def submit_document(core_url: str, token: str, deal_id: str, doc_id: str, version: int) -> httpx.Response:
+    return httpx.post(
+        f"{core_url}/api/core/deals/{deal_id}/documents/{doc_id}/submit",
+        headers=auth_headers(token),
+        json={"version": version},
+        timeout=10.0,
+    )
+
+
+def tick_until(core_url: str, token: str, deal_id: str, predicate, *, timeout_sec: float = 60) -> dict:
+    """Ticks the (EMULATOR_MANUAL) emulator, waiting out real EMULATOR_SPEED=demo
+    delays, until `predicate(deal_json)` is true or `timeout_sec` elapses.
+    Returns the last-fetched deal; callers assert on the predicate outcome
+    themselves so a timeout produces an assertion with the stuck state."""
+    deadline = time.monotonic() + timeout_sec
+    deal = get_deal(core_url, token, deal_id).json()["deal"]
+    while not predicate(deal) and time.monotonic() < deadline:
+        tick_emulator(core_url)
+        time.sleep(1)
+        deal = get_deal(core_url, token, deal_id).json()["deal"]
+    return deal
 
 
 def test_create_deal_returns_201_with_initial_state(core_url: str, company: dict):
@@ -146,51 +173,156 @@ def test_scenario_unavailable_for_small_trade_finance_amount(core_url: str, comp
     assert resp.json()["code"] == "SCENARIO_UNAVAILABLE"
 
 
-def test_submit_document_and_emulator_ticks_complete_the_deal(core_url: str, company: dict):
-    # cbdc only requires contract + invoice (see spec §4.2) — draw deals
-    # until we get one the emulator will approve both of deterministically.
+def test_rejected_document_recovers_via_resubmission_to_completed(core_url: str, company: dict):
+    """The product's recovery story (F2/F3/F5): a document rejected on its
+    first submission is not a dead end — resubmitting it always succeeds
+    (documentApproved's attempt>=1 rule), and the deal proceeds all the way
+    to completed. Draw a deal_id where "contract" is rejected on attempt 0
+    and "invoice" is approved on attempt 0, so the test only has to recover
+    from exactly one rejection and stays deterministic."""
+    token = company["token"]
     for _ in range(50):
-        deal = create_deal(core_url, company["token"])
-        if _document_approved(deal["id"], "contract") and _document_approved(deal["id"], "invoice"):
+        deal = create_deal(core_url, token)
+        if not _document_approved(deal["id"], "contract", 0) and _document_approved(deal["id"], "invoice", 0):
             break
     else:
-        raise AssertionError("couldn't draw a deal_id the emulator approves both documents for")
+        raise AssertionError("couldn't draw a deal_id with contract rejected / invoice approved on attempt 0")
 
-    scenario_resp = choose_scenario(core_url, company["token"], deal["id"], "cbdc", deal["version"])
-    deal = scenario_resp.json()["deal"]
+    deal = choose_scenario(core_url, token, deal["id"], "cbdc", deal["version"]).json()["deal"]
+    deal_id = deal["id"]
+    contract_doc = next(d for d in deal["documents"] if d["kind"] == "contract")
 
-    for doc in deal["documents"]:
-        submit = httpx.post(
-            f"{core_url}/api/core/deals/{deal['id']}/documents/{doc['id']}/submit",
-            headers=auth_headers(company["token"]),
-            json={"version": deal["version"]},
-            timeout=10.0,
-        )
-        assert submit.status_code == 200, submit.text
-        deal = submit.json()["deal"]
+    submit = submit_document(core_url, token, deal_id, contract_doc["id"], deal["version"])
+    assert submit.status_code == 200, submit.text
+    deal = submit.json()["deal"]
 
-    submitted_doc = next(d for d in deal["documents"] if d["kind"] == "contract")
-    assert submitted_doc["status"] == "uploaded"
+    # Two ticks, doc_review_sec apart: uploaded -> under_review -> rejected.
+    deal = tick_until(core_url, token, deal_id, lambda d: d["stage"] == "blocked")
+    assert deal["stage"] == "blocked"
+    assert deal.get("attention_reason")
+    contract_doc = next(d for d in deal["documents"] if d["kind"] == "contract")
+    assert contract_doc["status"] == "rejected"
+    assert contract_doc["reject_reason"]
 
-    # EMULATOR_MANUAL=true: nothing advances on its own. Tick repeatedly,
-    # waiting out EMULATOR_SPEED=demo's real delays (next_action_at is a
-    # real timestamp, so a tick before it elapses is a no-op) until the
-    # deal reaches its terminal stage or we give up.
-    deadline = time.monotonic() + 60
-    stage = deal["stage"]
-    while stage != "completed" and time.monotonic() < deadline:
-        tick_emulator(core_url)
-        time.sleep(1)
-        stage = get_deal(core_url, company["token"], deal["id"]).json()["deal"]["stage"]
+    # Resubmit the same document — onDocumentSubmitted's blocked -> documents
+    # path (F3's rearm branch), attempt is now 1.
+    resubmit = submit_document(core_url, token, deal_id, contract_doc["id"], deal["version"])
+    assert resubmit.status_code == 200, resubmit.text
+    deal = resubmit.json()["deal"]
+    assert deal["stage"] == "documents"
 
-    assert stage == "completed", f"deal stuck at stage={stage!r}"
-
-    notifications = httpx.get(
-        f"{core_url}/api/core/notifications", headers=auth_headers(company["token"]), timeout=10.0
+    deal = tick_until(
+        core_url, token, deal_id, lambda d: next(doc for doc in d["documents"] if doc["kind"] == "contract")["status"] == "approved"
     )
-    assert notifications.status_code == 200
-    items = notifications.json()["items"]
-    assert any(item["deal_id"] == deal["id"] for item in items)
+    contract_doc = next(d for d in deal["documents"] if d["kind"] == "contract")
+    assert contract_doc["status"] == "approved", "resubmission (attempt 1) must never be rejected again"
+    # Invoice was never touched by the block/resubmit above — still on its
+    # own first attempt (drawn to approve).
+    assert deal["stage"] == "documents"
+
+    invoice_doc = next(d for d in deal["documents"] if d["kind"] == "invoice")
+    submit_invoice = submit_document(core_url, token, deal_id, invoice_doc["id"], deal["version"])
+    assert submit_invoice.status_code == 200, submit_invoice.text
+
+    deal = tick_until(core_url, token, deal_id, lambda d: d["stage"] == "completed", timeout_sec=90)
+    assert deal["stage"] == "completed", f"deal stuck at stage={deal['stage']!r}"
+
+    notifications = httpx.get(f"{core_url}/api/core/notifications", headers=auth_headers(token), timeout=10.0).json()
+    items = notifications["items"]
+    assert any(item["deal_id"] == deal_id and item["severity"] == "critical" for item in items), "the rejection notification"
+    assert any(item["deal_id"] == deal_id and item["severity"] == "info" for item in items), "the completion notification"
+
+    # F5: the deal.updated event that moved the deal to `blocked` reached the
+    # transactional outbox and was actually published (picked up by
+    # OutboxPublisher, PUBLISHed to Redis) — not just written to Postgres.
+    assert outbox_published_event(deal_id, "deal.updated")
+
+
+def test_notifications_are_isolated_by_company(core_url: str, company: dict, other_company: dict):
+    # A rejected document is the cheapest deterministic way to get a
+    # notification: draw a deal_id the emulator rejects on the first
+    # required document, submit it, and tick until the critical
+    # notification exists.
+    token = company["token"]
+    for _ in range(50):
+        deal = create_deal(core_url, token)
+        if not _document_approved(deal["id"], "contract", 0):
+            break
+    else:
+        raise AssertionError("couldn't draw a deal_id the emulator rejects on the first attempt")
+
+    deal = choose_scenario(core_url, token, deal["id"], "cbdc", deal["version"]).json()["deal"]
+    deal_id = deal["id"]
+    contract_doc = next(d for d in deal["documents"] if d["kind"] == "contract")
+    submit_document(core_url, token, deal_id, contract_doc["id"], deal["version"])
+    tick_until(core_url, token, deal_id, lambda d: d["stage"] == "blocked")
+
+    own = httpx.get(f"{core_url}/api/core/notifications", headers=auth_headers(token), timeout=10.0).json()
+    own_notification = next(item for item in own["items"] if item["deal_id"] == deal_id)
+
+    other_resp = httpx.get(
+        f"{core_url}/api/core/notifications", headers=auth_headers(other_company["token"]), timeout=10.0
+    )
+    assert other_resp.status_code == 200
+    other_ids = {item["deal_id"] for item in other_resp.json()["items"]}
+    assert deal_id not in other_ids
+
+    read_by_other = httpx.post(
+        f"{core_url}/api/core/notifications/{own_notification['id']}/read",
+        headers=auth_headers(other_company["token"]),
+        timeout=10.0,
+    )
+    assert read_by_other.status_code == 404
+    assert read_by_other.json()["code"] == "NOT_FOUND"
+
+
+def test_mark_notification_read_then_404_on_second_call(core_url: str, company: dict):
+    token = company["token"]
+    for _ in range(50):
+        deal = create_deal(core_url, token)
+        if not _document_approved(deal["id"], "contract", 0):
+            break
+    else:
+        raise AssertionError("couldn't draw a deal_id the emulator rejects on the first attempt")
+
+    deal = choose_scenario(core_url, token, deal["id"], "cbdc", deal["version"]).json()["deal"]
+    deal_id = deal["id"]
+    contract_doc = next(d for d in deal["documents"] if d["kind"] == "contract")
+    submit_document(core_url, token, deal_id, contract_doc["id"], deal["version"])
+    tick_until(core_url, token, deal_id, lambda d: d["stage"] == "blocked")
+
+    items = httpx.get(f"{core_url}/api/core/notifications", headers=auth_headers(token), timeout=10.0).json()["items"]
+    notification = next(item for item in items if item["deal_id"] == deal_id)
+    assert notification["read"] is False
+
+    first = httpx.post(f"{core_url}/api/core/notifications/{notification['id']}/read", headers=auth_headers(token), timeout=10.0)
+    assert first.status_code == 204
+
+    items = httpx.get(f"{core_url}/api/core/notifications", headers=auth_headers(token), timeout=10.0).json()["items"]
+    updated = next(item for item in items if item["id"] == notification["id"])
+    assert updated["read"] is True
+
+    second = httpx.post(f"{core_url}/api/core/notifications/{notification['id']}/read", headers=auth_headers(token), timeout=10.0)
+    assert second.status_code == 404
+    assert second.json()["code"] == "NOT_FOUND"
+
+
+def test_create_deal_amount_over_numeric_limit_returns_400(core_url: str, company: dict):
+    # NUMERIC(18,2)'s magnitude limit: 16 integer digits (F6).
+    resp = httpx.post(
+        f"{core_url}/api/core/deals",
+        headers=auth_headers(company["token"]),
+        json={
+            "counterparty_country": "CN",
+            "counterparty_name": "Trading Partner Co",
+            "operation_type": "import",
+            "amount": 1e16,
+            "currency": "CNY",
+        },
+        timeout=10.0,
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
 
 
 def test_missing_token_returns_401_unauthorized(core_url: str):

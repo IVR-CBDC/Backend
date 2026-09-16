@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import random
+import subprocess
 import time
 import uuid
 
@@ -18,6 +19,27 @@ import pytest
 DEFAULT_AUTH_URL = "http://127.0.0.1:18080"
 DEFAULT_CORE_URL = "http://127.0.0.1:18081"
 READY_TIMEOUT_SEC = 60
+
+# pg-core's host-published port (implementer-rules.md). Used instead of
+# subscribing to Redis pub/sub from pytest for the outbox->Redis assertion
+# (F5): the `redis` container's 6379 isn't published to the host, only
+# reachable on ivr_backend-net, which this host-side pytest process isn't
+# attached to — the brief's own fallback for exactly this case.
+PG_CORE_DSN = os.environ.get("PG_CORE_DSN", "postgresql://core:core@127.0.0.1:5435/core")
+
+
+def outbox_published_event(deal_id: str, event_type: str) -> bool:
+    """True once an outbox row for `deal_id`/`event_type` exists and has been
+    published (published_at IS NOT NULL) — proof the row was both written by
+    DealRepository::apply() and picked up by OutboxPublisher and PUBLISHed to
+    Redis (publishOnce() only sets published_at after a successful PUBLISH)."""
+    query = (
+        "SELECT count(*) FROM outbox WHERE payload->>'deal_id' = '{}' "
+        "AND payload->>'type' = '{}' AND published_at IS NOT NULL".format(deal_id, event_type)
+    )
+    result = subprocess.run(["psql", PG_CORE_DSN, "-tAc", query], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    return int(result.stdout.strip() or "0") > 0
 
 
 @pytest.fixture(scope="session")
@@ -44,7 +66,12 @@ def stack_ready(auth_url: str, core_url: str) -> None:
         for name, url in list(pending.items()):
             try:
                 resp = httpx.get(url, timeout=2.0)
-                if resp.status_code == 200:
+                # 200 alone isn't enough: /health can answer 200 with
+                # ok=false (e.g. redis_ok=false — see F1) when a dependency
+                # is misconfigured, and running the suite against a
+                # half-broken stand should fail loudly here, not with a
+                # confusing pile of per-test connection errors.
+                if resp.status_code == 200 and resp.json().get("ok") is True:
                     del pending[name]
             except httpx.HTTPError:
                 pass
