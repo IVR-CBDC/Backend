@@ -202,8 +202,9 @@ blocked ──устранение (переподача документа / п
 
 - Паблишер: `runEvery(0.5s)`, берёт неопубликованные строки `ORDER BY id FOR UPDATE SKIP LOCKED`,
   `PUBLISH deal-events:{company_id} <payload>` через `drogon::nosql::RedisClient`, ставит `published_at`.
-- Формат: `{"seq": <outbox.id>, "type": "deal.updated"|"notification.created",
-  "deal_id": "...", "notification_id": "...", "at": "<iso>"}`.
+- Формат: `{"seq": <outbox.id>, "type": "deal.created"|"deal.updated"|"notification.created",
+  "deal_id": "...", "notification_id": "...", "at": "<iso>"}`. `at` — `outbox.created_at`
+  (ISO-8601 UTC) той строки, то есть момент записи в outbox, а не момент публикации.
 - Доставка at-least-once; `seq` (= `outbox.id`) — уникальный id доставки для дедупликации
   повторов, **не гарантия порядка**: `id` назначается при INSERT, но строка видна паблишеру
   только после COMMIT своей транзакции, а две параллельные `DealRepository::apply()` могут
@@ -212,13 +213,17 @@ blocked ──устранение (переподача документа / п
   идемпотентен. BFF дедуплицирует по множеству уже виденных `seq`, а **не** по отбрасыванию
   `seq` ≤ последнего отправленного — такое сравнение потеряло бы легитимное, ещё не виденное
   событие с меньшим `seq`.
+- Redis pub/sub не хранит историю: `PUBLISH` доставляет только тем, кто подписан в этот момент.
+  BFF, переподключившийся к каналу (рестарт, разрыв соединения), не получит события, пропущенные
+  за время простоя — он должен перезапросить список сделок у service-core, а не полагаться на то,
+  что канал «дошлёт» пропущенное.
 
 ### 4.5 API service-core (внутренний, все ручки под `JwtFilter`, фильтрация по `company_id`)
 
 | Метод | Путь | Тело / ответ |
 |---|---|---|
 | GET | `/health` | `{ok, service, version, postgres_ok, redis_ok}` (без JWT) |
-| GET | `/api/core/deals?limit=&cursor=` | `{items: DealSummary[], next_cursor}` |
+| GET | `/api/core/deals?limit=` | `{items: DealSummary[], count}` |
 | POST | `/api/core/deals` | `CreateDeal` → `201 Deal` |
 | GET | `/api/core/deals/{id}` | `Deal` (с documents, timeline) |
 | POST | `/api/core/deals/{id}/scenario` | `{scenario, version}` → `Deal` (вызывает commission) |
@@ -228,6 +233,11 @@ blocked ──устранение (переподача документа / п
 
 Чужая сделка → `404` (не `403`, чтобы не раскрывать существование). Несовпадение `version` →
 `409 VERSION_CONFLICT`. Полный контракт — `docs/openapi/core.yml`.
+
+Курсорная пагинация (`?cursor=` → `next_cursor`) сознательно не реализована в плане 03: список
+сделок компании на демо-объёмах — единицы-десятки записей, `?limit=` без курсора закрывает эту
+потребность. Добавить курсоры, когда UX дашборда (план 06) определит размер страницы —
+см. дорожную карту.
 
 ## 5. service-commission
 
