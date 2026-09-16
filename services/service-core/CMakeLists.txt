@@ -40,3 +40,7 @@ target_link_libraries(service_core PRIVATE
   OpenSSL::SSL OpenSSL::Crypto
   PkgConfig::JWT
 )
+
+if(BUILD_TESTS AND TARGET Catch2::Catch2WithMain)
+  add_subdirectory(tests)
+endif()
