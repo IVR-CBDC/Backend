@@ -1,4 +1,4 @@
-.PHONY: keys up down logs test-register test-login test-core smoke-commission test-commission test-commission-db lsp openapi \
+.PHONY: keys up down logs test-register test-login test-core smoke-commission test-commission test-commission-db test-cpp lsp openapi \
        new-cpp new-python k3s-install k3s-import-images k3s-setup \
        k3s-build k3s-deploy k3s-deploy-data up-k3s down-k3s k3s-status \
        k3s-test-health k3s-test-auth k3s-test-core
@@ -60,6 +60,14 @@ smoke-commission:
 lsp:
 	cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 	ln -sf build/compile_commands.json compile_commands.json
+
+# RelWithDebInfo — потому что при Debug CMakeLists сервисов включают ASan/UBSan,
+# и посторонние утечки в libjwt/drogon валят прогон; санитайзеры остаются
+# доступны через явный -DCMAKE_BUILD_TYPE=Debug.
+test-cpp:
+	cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTS=ON
+	cmake --build build -j$(shell nproc)
+	ctest --test-dir build --output-on-failure
 
 openapi:
 	bash infra/gen-openapi.sh

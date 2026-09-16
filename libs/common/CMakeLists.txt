@@ -24,3 +24,7 @@ target_link_libraries(common PUBLIC
   Drogon::Drogon
   PkgConfig::JWT
 )
+
+if(BUILD_TESTS AND TARGET Catch2::Catch2WithMain)
+  add_subdirectory(tests)
+endif()
