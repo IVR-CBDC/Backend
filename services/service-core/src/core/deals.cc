@@ -64,11 +64,19 @@ std::string validateCreateDeal(const Json::Value &body, CreateDealInput &out) {
   if (!operation_type) return "operation_type должен быть import или export";
 
   const Json::Value &amountJson = body["amount"];
-  if (!amountJson.isNumeric()) return "Сумма должна быть числом больше нуля";
+  // jsoncpp's isNumeric() is true for booleanValue too (a bool converts
+  // trivially to 0/1) — isBool() must be checked explicitly first, or
+  // {"amount": true} would silently validate as 1.00 (F7).
+  if (amountJson.isBool() || !amountJson.isNumeric()) return "Сумма должна быть числом больше нуля";
   double amount = amountJson.asDouble();
   double scaled = amount * 100.0;
   if (amount <= 0 || std::abs(scaled - std::round(scaled)) > 1e-6)
     return "Сумма должна быть больше нуля и содержать не более двух знаков после запятой";
+  // NUMERIC(18,2)'s magnitude limit: 18 total digits, 2 after the decimal,
+  // so the integer part tops out at 16 digits — an amount at or above 10^16
+  // would blow up inside create()'s INSERT with a Postgres numeric overflow
+  // (500) instead of this 400 (F6).
+  if (amount >= 1e16) return "Сумма превышает максимально допустимое значение";
 
   std::string currency = body.get("currency", "").asString();
   if (!upperAlpha(currency, 3)) return "Код валюты должен состоять из трёх букв";

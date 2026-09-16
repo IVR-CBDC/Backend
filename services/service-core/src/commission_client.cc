@@ -26,9 +26,19 @@ HttpClientPtr commissionClient() {
   return client;
 }
 
-Quote parseQuote(const Json::Value &q) {
+// nullopt when upstream sends a scenario string we don't recognize — never
+// silently relabel it as some other scenario (F7): that's a money path,
+// and .value_or(Scenario::cbdc) used to make an unknown quote masquerade as
+// a cbdc one instead of being dropped.
+std::optional<Quote> parseQuote(const Json::Value &q) {
+  auto scenario = scenarioFromString(q["scenario"].asString());
+  if (!scenario) {
+    LOG_ERROR << "commission_client: dropping quote with unknown scenario " << q["scenario"].asString();
+    return std::nullopt;
+  }
+
   Quote quote;
-  quote.scenario = scenarioFromString(q["scenario"].asString()).value_or(Scenario::cbdc);
+  quote.scenario = *scenario;
   quote.available = q["available"].asBool();
   quote.unavailable_reason = q["unavailable_reason"].isNull() ? std::string() : q["unavailable_reason"].asString();
   if (!q["commission"].isNull()) {
@@ -85,7 +95,8 @@ Task<QuotesResult> fetchQuotes(std::string authorization, std::string from_count
   if (status == k200OK) {
     std::vector<Quote> quotes;
     if (auto json = resp->getJsonObject(); json && json->isMember("quotes")) {
-      for (const auto &q : (*json)["quotes"]) quotes.push_back(parseQuote(q));
+      for (const auto &q : (*json)["quotes"])
+        if (auto quote = parseQuote(q)) quotes.push_back(*quote);
     }
     co_return quotes;
   }

@@ -17,7 +17,9 @@ namespace {
 // duplicated (a few lines) rather than factored into a shared header, since
 // the brief scopes this task to scenario.cc/documents.cc/deals.cc only.
 bool parseVersion(const Json::Value &body, int &out) {
-  if (!body.isMember("version") || !body["version"].isIntegral()) return false;
+  // jsoncpp's isIntegral() is true for booleanValue too — isBool() must be
+  // rejected explicitly, or {"version": true} would silently parse as 1 (F7).
+  if (!body.isMember("version") || body["version"].isBool() || !body["version"].isIntegral()) return false;
   int v = body["version"].asInt();
   if (v < 0) return false;
   out = v;

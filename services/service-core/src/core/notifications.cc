@@ -45,6 +45,9 @@ Task<> CoreController::listNotifications(HttpRequestPtr req, std::function<void(
 
     // See repository.cc's list(): LIMIT needs an explicit ::int cast, else
     // Postgres infers int8 and rejects Drogon's 4-byte int bind.
+    // deal_id::text on a NULL uuid stays NULL, not "" — but relying on that
+    // implicitly reads as a bug at a glance, so the null check below is
+    // explicit (F7).
     auto rows = co_await db->execSqlCoro(
         "SELECT id::text AS id, deal_id::text AS deal_id, severity, message, "
         "       (read_at IS NOT NULL) AS read, "
@@ -59,7 +62,7 @@ Task<> CoreController::listNotifications(HttpRequestPtr req, std::function<void(
     for (const auto &row : rows) {
       Json::Value j;
       j["id"] = row["id"].as<std::string>();
-      j["deal_id"] = row["deal_id"].as<std::string>();
+      j["deal_id"] = row["deal_id"].isNull() ? Json::Value() : Json::Value(row["deal_id"].as<std::string>());
       j["severity"] = row["severity"].as<std::string>();
       j["message"] = row["message"].as<std::string>();
       j["read"] = row["read"].as<bool>();
