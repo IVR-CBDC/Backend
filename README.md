@@ -88,12 +88,22 @@ Traefik пока про него не знает — внешняя маршру
 поэтому в `docker-compose.yml` `bff` виден только другим сервисам внутри
 `backend-net`.
 
-По умолчанию `docker-compose.yml` тянет `bff` из
-`${BFF_IMAGE:-ghcr.io/ivr-cbdc/backend/bff:latest}`:
+По умолчанию `docker-compose.yml` ссылается на
+`${BFF_IMAGE:-ghcr.io/ivr-cbdc/frontend/bff:latest}` — это правильный
+namespace по спеке §9 (образ bff собирает и публикует CI
+**Frontend**-репозитория, тег приезжает в `infra/helm/frontend-tags.env`),
+но **этот образ пока никто не публиковал** — ни туда, ни в старый
+`backend/bff`. Поэтому `bff` объявлен с `profiles: ["bff"]`: обычный
+`make up` (без списка сервисов, т.е. `docker compose up --build -d`) его
+не трогает и не пытается тянуть несуществующий образ — свежий клон
+поднимается (F1, final review плана 05). Чтобы поднять именно `bff`,
+называй его явно — явное указание сервиса в команде поднимает его,
+несмотря на `profiles` (задокументированное поведение `docker compose`):
 
 ```bash
+BFF_IMAGE=<готовый образ> \
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait bff
-curl -s http://127.0.0.1:14000/health   # порт открыт только dev-оверлеем
+curl -s http://127.0.0.1:14000/ready    # порт открыт только dev-оверлеем
 ```
 
 Для локальной сборки образа из соседнего checkout Frontend-репозитория
@@ -112,9 +122,21 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml \
 команду самому, `cp` рядом с именем по умолчанию недостаточно.
 
 `bff` ждёт `service_healthy` от auth/core/commission/redis и сам публикует
-healthcheck по `/health` (`{"status":"ok"}`) — `--wait` не сочтёт стенд
-готовым, пока BFF не сможет говорить со всеми апстримами. SPA (`frontend/`)
-в стенд пока не входит — это план 06.
+healthcheck по `/ready` (`{"ok":true,...}`, F10 final review — `/health` теперь
+только живость процесса, без сети; `/ready` — настоящая готовность: Redis-
+подписка в моменте плюс достижимость auth/core/commission) — `--wait` не
+сочтёт стенд готовым, пока BFF не сможет говорить со всеми апстримами. SPA
+(`frontend/`) в стенд пока не входит — это план 06.
+
+CI Backend-репозитория (`.github/workflows/ci.yml`, джоба `api`) сознательно
+**не** поднимает `bff`: у него нет ни исходников bff (они в
+Frontend-репозитории), ни доступа к опубликованному образу (см. абзац выше)
+— добавление `bff` в список `up --wait` сейчас лишь заменило бы одну гарантированную
+поломку (`make up`) на другую (CI). Это станет возможным, когда
+Frontend-репозиторий будет запушен под `IVR-CBDC/Frontend` и его CI начнёт
+публиковать образ — тогда backend CI сможет либо тянуть его, либо
+чекаутить Frontend-репозиторий рядом и собирать оттуда, как это уже делает
+`docker-compose.override.yml.example` локально.
 
 ## Структура
 

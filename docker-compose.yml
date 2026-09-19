@@ -227,12 +227,28 @@ services:
 
   # ============================================================
   # BFF (план 05, Frontend-репозиторий) — единственная дверь для SPA.
-  # Образ по умолчанию тянется из ghcr; для локальной сборки из
-  # ../alfa-cbdc-hub см. docker-compose.override.yml.example. Traefik сюда
-  # пока не смотрит — внешняя маршрутизация BFF это план 08.
+  # F1 (final review): образ по умолчанию — не наш образ. По спеке §9 CI
+  # Frontend-репозитория собирает и публикует
+  # ghcr.io/ivr-cbdc/frontend/bff (тег приезжает в
+  # infra/helm/frontend-tags.env), а не ghcr.io/ivr-cbdc/backend/bff —
+  # namespace ниже поправлен под это. Но CI Frontend-репозитория этот
+  # образ пока ни разу не публиковал (см. README) — с текущим тегом его
+  # нельзя ни собрать (Backend-репозиторий не содержит исходники bff), ни
+  # стянуть. `make up` раньше запускал `docker compose up --build -d` без
+  # списка сервисов и поэтому на каждом свежем клоне пытался тянуть
+  # несуществующий образ и падал. `profiles: [bff]` исключает bff из
+  # такого «поднять всё» по умолчанию — сервис по-прежнему поднимается,
+  # если его назвать явно (`docker compose ... up -d --wait bff`, как
+  # делают README/Step 3 плана 05): именование сервиса на команде
+  # обходит profiles независимо от того, активирован ли профиль — это
+  # задокументированное поведение docker compose, проверено локально
+  # (см. отчёт). Для локальной сборки из ../alfa-cbdc-hub по-прежнему
+  # нужен docker-compose.override.yml.example — он не изменился.
+  # Traefik сюда пока не смотрит — внешняя маршрутизация BFF это план 08.
   # ============================================================
   bff:
-    image: ${BFF_IMAGE:-ghcr.io/ivr-cbdc/backend/bff:latest}
+    image: ${BFF_IMAGE:-ghcr.io/ivr-cbdc/frontend/bff:latest}
+    profiles: ["bff"]
     environment:
       PORT: "4000"
       AUTH_URL: http://service-auth:8080
@@ -247,7 +263,13 @@ services:
       service-commission: { condition: service_healthy }
       redis: { condition: service_healthy }
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health | grep -q '\"status\":\"ok\"' || exit 1"]
+      # F10 (final review): /health — только живость процесса (без сети),
+      # готовность (Redis-подписка в моменте + auth/core/commission) теперь
+      # отдельная ручка /ready — её и должен проверять compose/k3s
+      # readinessProbe (план 08), а не /health. Тело в том же виде,
+      # что у auth/core ({ok, ...}), поэтому грепаем "ok":true так же, как
+      # их healthcheck выше.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/ready | grep -q '\"ok\":true' || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 20
