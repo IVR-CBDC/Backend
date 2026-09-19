@@ -6,6 +6,7 @@ set -euo pipefail
 svc="${1:?usage: gen-migration-values.sh <service-name>}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 src="${root}/services/${svc}/migrations"
+script="${root}/infra/migrate.sh"
 out_dir="${root}/infra/helm/generated"
 out="${out_dir}/migrations-${svc}.yaml"
 
@@ -16,6 +17,10 @@ files=("${src}"/*.sql)
 {
   echo "# СГЕНЕРИРОВАНО infra/gen-migration-values.sh — не редактировать"
   echo "migrations:"
+  # Единственный источник правды и для кода скрипта: чарт не хранит свою
+  # копию infra/migrate.sh, а рендерит её из этого значения.
+  echo "  script: |"
+  sed 's/^/    /' "${script}"
   if [ "${#files[@]}" -eq 0 ]; then
     echo "  files: {}"
   else

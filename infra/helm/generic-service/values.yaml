@@ -25,6 +25,7 @@ jwtKeys:
 migrations:
   enabled: false
   image: postgres:16
+  script: ""
   files: {}
   db:
     host: ""
