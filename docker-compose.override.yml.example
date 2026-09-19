@@ -21,3 +21,12 @@ services:
       context: ../alfa-cbdc-hub/bff
       dockerfile: Dockerfile
     image: bff-local:dev
+
+  # F14 (final review): docker-compose.yml раньше ссылался на блок frontend
+  # здесь же, которого не было — тот же паттерн, что у bff выше, теперь
+  # добавлен и для SPA.
+  frontend:
+    build:
+      context: ../alfa-cbdc-hub/frontend
+      dockerfile: Dockerfile
+    image: frontend-local:dev

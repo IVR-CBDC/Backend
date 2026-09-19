@@ -255,7 +255,11 @@ services:
       CORE_URL: http://service-core:8080
       COMMISSION_URL: http://service-commission:8000
       REDIS_URL: redis://redis:6379
-      ALLOWED_ORIGINS: http://localhost:5173,http://localhost
+      # F12 (final review): параметризовано, чтобы план 08 (Traefik перед
+      # SPA) не правил этот файл, а задавал свой список origin'ов через
+      # переменную окружения — этот дефолт остаётся рабочим для локального
+      # стенда без Traefik.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost}
       COOKIE_SECURE: "false"
     depends_on:
       service-auth: { condition: service_healthy }
@@ -295,7 +299,12 @@ services:
       # nginx сам ничего не знает о готовности бэкенда за ним — проверяем
       # только то, что nginx реально отдаёт SPA (страница на "/"), как и
       # положено liveness/readiness-проверке статического сервера.
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ | grep -qi '<html' || exit 1"]
+      #
+      # F11 (final review): образ SPA перешёл на nginxinc/nginx-unprivileged
+      # (Frontend-репозиторий, frontend/Dockerfile) — он слушает 8080, а не
+      # 80 (привязка к :80 требует root, под restricted/runAsNonRoot под не
+      # стартует).
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ | grep -qi '<html' || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 20
