@@ -134,6 +134,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # infra/gen-keys.sh конвертирует PEM -> JWK через python3+cryptography
+      # (см. тот же комментарий в джобе cpp) — на голом ubuntu-latest раннере
+      # это не гарантировано (GitHub не обещает cryptography в системном
+      # python3), поэтому ставим явно перед вызовом скрипта.
+      - name: Install python3 + cryptography (for gen-keys.sh)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 python3-cryptography
+
       - name: Generate JWT keys
         run: bash infra/gen-keys.sh
 
