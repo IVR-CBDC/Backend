@@ -1,23 +1,5 @@
-FROM debian:bookworm AS build
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-	build-essential cmake pkg-config git ca-certificates autoconf automake libtool \
-	libjsoncpp-dev uuid-dev zlib1g-dev libssl-dev \
-	libpq-dev libhiredis-dev libargon2-dev libjansson-dev libgnutls28-dev \
-	&& rm -rf /var/lib/apt/lists/*
-
-RUN git clone --depth 1 --branch v3.2.3 https://github.com/benmcollins/libjwt.git /tmp/libjwt \
-	&& cd /tmp/libjwt && mkdir build && cd build \
-	&& cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local .. \
-	&& make -j$(nproc) && make install \
-	&& ldconfig && rm -rf /tmp/libjwt
-
-RUN git clone --depth 1 --branch v1.9.7 https://github.com/drogonframework/drogon.git /tmp/drogon \
-	&& cd /tmp/drogon && git submodule update --init \
-	&& mkdir build && cd build \
-	&& cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_POSTGRESQL=ON -DBUILD_REDIS=ON .. \
-	&& make -j$(nproc) && make install \
-	&& rm -rf /tmp/drogon
+ARG BASE_IMAGE=ivr-cpp-base:latest
+FROM ${BASE_IMAGE} AS build
 
 WORKDIR /app
 COPY libs/common/ /app/libs/common/

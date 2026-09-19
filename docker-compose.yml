@@ -11,6 +11,18 @@ volumes:
 
 services:
   # ============================================================
+  # Общий базовый образ для C++/Drogon-сервисов (см. infra/docker/cpp-base.Dockerfile)
+  # ============================================================
+  cpp-base:
+    profiles: [build]
+    image: ivr-cpp-base:latest
+    build:
+      context: .
+      dockerfile: infra/docker/cpp-base.Dockerfile
+    command: ["true"]
+    networks: [backend-net]
+
+  # ============================================================
   # Ingress
   # ============================================================
   traefik:

@@ -1,4 +1,4 @@
-.PHONY: keys up down logs test-register test-login test-me smoke-commission test-commission test-commission-db test-cpp test-api smoke-deal lsp openapi \
+.PHONY: keys cpp-base up down logs test-register test-login test-me smoke-commission test-commission test-commission-db test-cpp test-api smoke-deal lsp openapi \
        new-cpp new-python k3s-install k3s-import-images k3s-setup \
        k3s-build k3s-deploy k3s-deploy-data up-k3s down-k3s k3s-status \
        k3s-test-health k3s-test-auth k3s-test-core
@@ -6,7 +6,13 @@
 keys:
 	bash infra/gen-keys.sh
 
+# Общий базовый образ для C++/Drogon-сервисов — собирается один раз,
+# сервисные сборки после этого не тратят ~15 минут на drogon/libjwt.
+cpp-base:
+	docker compose --profile build build cpp-base
+
 up: keys
+	@docker image inspect ivr-cpp-base:latest >/dev/null 2>&1 || $(MAKE) cpp-base
 	docker compose up --build -d
 	@echo ""
 	@echo "Up:"
