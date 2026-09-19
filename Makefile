@@ -47,6 +47,7 @@ test-commission:
 	cd services/service-commission && uv run pytest -q -m "not db"
 
 test-commission-db:
+	@docker image inspect ivr-cpp-base:latest >/dev/null 2>&1 || $(MAKE) cpp-base
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d pg-commission migrate-commission
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml wait migrate-commission
 	cd services/service-commission && \
@@ -65,6 +66,7 @@ smoke-commission:
 # порты 18080/18081 — доступные только с docker-compose.dev.yml (host-порты
 # не публикуются в обычном docker-compose.yml, см. Task 3).
 test-api:
+	@docker image inspect ivr-cpp-base:latest >/dev/null 2>&1 || $(MAKE) cpp-base
 	EMULATOR_MANUAL=true docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build \
 		pg-auth migrate-auth service-auth \
 		pg-core migrate-core service-core \

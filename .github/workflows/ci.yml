@@ -155,7 +155,20 @@ jobs:
           load: true
           cache-from: type=gha
 
+      # F1 (final review): docker/setup-buildx-action делает текущим билдер с
+      # драйвером docker-container, а `docker compose build` строит через
+      # buildx (через текущий билдер). Container-драйвер собирает в отдельном
+      # контейнере и НЕ видит image store демона — значит `FROM ${BASE_IMAGE}`
+      # (ivr-cpp-base:latest, только что загруженный в демон шагом выше через
+      # load: true) резолвится как попытка спуллить с registry и падает
+      # pull access denied. BUILDX_BUILDER=default возвращает этот конкретный
+      # шаг на classic docker-драйвер, который строит через тот же демон и
+      # видит его image store — сам билдер, созданный setup-buildx-action,
+      # при этом не трогаем (env переопределяет билдер только для команд
+      # внутри этого шага, не меняет `docker buildx use` глобально).
       - name: Bring up stack (EMULATOR_MANUAL=true)
+        env:
+          BUILDX_BUILDER: default
         run: |
           EMULATOR_MANUAL=true docker compose \
             -f docker-compose.yml -f docker-compose.dev.yml \
@@ -163,6 +176,13 @@ jobs:
             pg-auth migrate-auth service-auth \
             pg-core migrate-core service-core \
             pg-commission migrate-commission service-commission redis
+
+      # F2 (final review): tests/api/conftest.py вызывает psql (проверка
+      # outbox) — на ubuntu-latest он сейчас есть предустановленным, но это
+      # недекларированная зависимость от состава образа раннера. Ставим явно,
+      # симметрично джобе commission.
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
       - uses: astral-sh/setup-uv@v5
 
