@@ -80,6 +80,42 @@ Explicit лучше implicit здесь: все `-f`-цепочки перечи
 иначе получится то же молчаливое расхождение, которого мы здесь избегаем:
 `make up` видит сервис, а `make test-api`/CI — нет.
 
+## BFF (план 05)
+
+Стенд умеет поднимать сервис `bff` — единственную дверь для SPA из
+Frontend-репозитория (`IVR-CBDC/Frontend`, локально `../alfa-cbdc-hub`).
+Traefik пока про него не знает — внешняя маршрутизация появится в плане 08,
+поэтому в `docker-compose.yml` `bff` виден только другим сервисам внутри
+`backend-net`.
+
+По умолчанию `docker-compose.yml` тянет `bff` из
+`${BFF_IMAGE:-ghcr.io/ivr-cbdc/backend/bff:latest}`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait bff
+curl -s http://127.0.0.1:14000/health   # порт открыт только dev-оверлеем
+```
+
+Для локальной сборки образа из соседнего checkout Frontend-репозитория
+используй `docker-compose.override.yml.example`:
+
+```bash
+cd ../alfa-cbdc-hub && docker build -t bff-local:dev -f bff/Dockerfile bff
+cd -
+cp docker-compose.override.yml.example docker-compose.override.yml
+docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+  -f docker-compose.override.yml up -d --wait bff
+```
+
+Напоминание из правила выше: `docker-compose.override.yml` не подхватывается
+неявно, пока `-f`-цепочка уже перечисляет файлы явно — его нужно дописать в
+команду самому, `cp` рядом с именем по умолчанию недостаточно.
+
+`bff` ждёт `service_healthy` от auth/core/commission/redis и сам публикует
+healthcheck по `/health` (`{"status":"ok"}`) — `--wait` не сочтёт стенд
+готовым, пока BFF не сможет говорить со всеми апстримами. SPA (`frontend/`)
+в стенд пока не входит — это план 06.
+
 ## Структура
 
 ```

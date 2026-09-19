@@ -224,3 +224,32 @@ services:
       interval: 5s
       retries: 20
     networks: [backend-net]
+
+  # ============================================================
+  # BFF (план 05, Frontend-репозиторий) — единственная дверь для SPA.
+  # Образ по умолчанию тянется из ghcr; для локальной сборки из
+  # ../alfa-cbdc-hub см. docker-compose.override.yml.example. Traefik сюда
+  # пока не смотрит — внешняя маршрутизация BFF это план 08.
+  # ============================================================
+  bff:
+    image: ${BFF_IMAGE:-ghcr.io/ivr-cbdc/backend/bff:latest}
+    environment:
+      PORT: "4000"
+      AUTH_URL: http://service-auth:8080
+      CORE_URL: http://service-core:8080
+      COMMISSION_URL: http://service-commission:8000
+      REDIS_URL: redis://redis:6379
+      ALLOWED_ORIGINS: http://localhost:5173,http://localhost
+      COOKIE_SECURE: "false"
+    depends_on:
+      service-auth: { condition: service_healthy }
+      service-core: { condition: service_healthy }
+      service-commission: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health | grep -q '\"status\":\"ok\"' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks: [backend-net]

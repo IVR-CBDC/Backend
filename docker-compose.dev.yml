@@ -27,3 +27,7 @@ services:
   service-core:
     ports:
       - "127.0.0.1:18081:8080"   # для tests/api (make test-api)
+
+  bff:
+    ports:
+      - "127.0.0.1:14000:4000"   # для ручной проверки /health и /api/* с хоста

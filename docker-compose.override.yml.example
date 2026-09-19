@@ -1,0 +1,23 @@
+# Пример docker-compose.override.yml для локальной сборки BFF из соседнего
+# checkout Frontend-репозитория, а не из ghcr-образа.
+#
+# ВАЖНО (правило из плана 04): compose НЕ подхватывает
+# docker-compose.override.yml автоматически, если в `-f`-цепочке уже указан
+# хотя бы один файл явно (а dev-оверлей этого требует — см.
+# docker-compose.dev.yml). Поэтому мало скопировать этот файл рядом,
+# override.yml тоже нужно перечислить в команде:
+#
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+#     -f docker-compose.override.yml up -d --wait bff
+#
+# Путь ../alfa-cbdc-hub предполагает, что Frontend-репозиторий выкачан рядом
+# с этим (Backend) репозиторием — так же, как это сделано у имплементора
+# плана 05. Поменяй context, если у тебя другое расположение.
+
+services:
+  bff:
+    build:
+      context: ../alfa-cbdc-hub/bff
+      dockerfile: Dockerfile
+    image: bff-local:dev
