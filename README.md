@@ -195,6 +195,53 @@ helm uninstall service-test-python -n backend
 helm uninstall pg-test-python -n data
 ```
 
+## Тесты и CI
+
+Наборы тестов:
+
+- `make test-cpp` — Catch2, C++ (46 тестов): `libs/common`, `service-auth`, `service-core`.
+  Отдельная workspace-сборка с `-DBUILD_TESTS=ON`, не образ сервиса.
+- `make test-commission` — pytest без БД (55 тестов): `app/domain.py` и остальная логика
+  `service-commission`, не требует Postgres.
+- `make test-commission-db` — pytest с маркером `db` (+6 тестов): поднимает `pg-commission`
+  из `docker-compose.dev.yml` (host-порт 5434) и гоняет тесты репозитория против реальной БД.
+  **Не входит в `make test-all`**, потому что требует уже поднятого стенда с host-портом, а не
+  просто `uv sync` — держать это отдельной командой честнее, чем прятать побочный эффект
+  внутри общей цели.
+- `make test-api` — pytest (`tests/api`, 12 тестов) против полного стенда
+  (`docker-compose.yml` + `docker-compose.dev.yml`, `EMULATOR_MANUAL=true`) через сквозной HTTP.
+
+Прогнать всё, что гоняет CI, одной командой:
+
+```bash
+make test-all   # test-cpp + test-commission + test-api
+```
+
+### Что делает CI (`.github/workflows/ci.yml`)
+
+На каждый `pull_request` и на `push` в любую ветку, кроме `main`, четыре независимые джобы
+(кроме `api`, которой нужен собранный `ivr-cpp-base`, — она ждёт джобу `cpp`):
+
+- `shellcheck` — `shellcheck infra/*.sh`.
+- `cpp` — собирает `ivr-cpp-base` (кэш GitHub Actions), затем `cmake`/`ctest` внутри него.
+- `commission` — `pytest -m "not db"`, затем с `postgres:16-alpine` как service-контейнером
+  джобы — миграции через `infra/migrate.sh` и `pytest -m db`.
+- `api` — поднимает стенд (`up -d --wait`, `EMULATOR_MANUAL=true`) и гоняет `tests/api`; при
+  падении логи `docker compose logs` уходят в артефакт джобы.
+
+### Зачем базовый образ и когда его пересобирать
+
+`ivr-cpp-base` (`infra/docker/cpp-base.Dockerfile`) собирает drogon и libjwt один раз вместо
+того, чтобы каждый сервисный Dockerfile (`service-auth`, `service-core`) делал это заново —
+сборка drogon с нуля занимает ~15-19 минут. Локально образ собирается через `make cpp-base`
+(или неявно при `make up`, если его ещё нет); в CI/CD — через `docker/build-push-action` с
+`cache-from`/`cache-to: type=gha` (в `deploy.yml` образ ещё и пушится в `ghcr.io`, сервисные
+сборки берут его через `--build-arg BASE_IMAGE=...`).
+
+Пересобирать вручную (`make cpp-base`) нужно только при смене версии drogon/libjwt или набора
+apt-пакетов в `cpp-base.Dockerfile` — изменения кода `service-auth`/`service-core` на него не
+влияют (образ не зависит от исходников репозитория).
+
 ## Переход на k3s
 
 Когда будешь готов:

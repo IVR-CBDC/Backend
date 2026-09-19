@@ -78,6 +78,8 @@ create_deal() {
 echo "=== Создание сделки (пока не выпадет id, который эмулятор одобрит целиком) ==="
 deal_json=""
 deal_id=""
+# attempt используется только как счётчик итераций, не как значение —
+# shellcheck disable=SC2034
 for attempt in $(seq 1 50); do
   deal_json="$(create_deal)"
   deal_id="$(echo "$deal_json" | field deal id)"

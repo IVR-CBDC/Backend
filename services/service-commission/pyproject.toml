@@ -31,3 +31,10 @@ testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
 markers = ["db: требует TEST_PG_DSN с применёнными миграциями"]
+# Глушим два конкретных предупреждения от starlette/httpx, не наших — по
+# точному сообщению и категории, а не ignore::DeprecationWarning целиком,
+# чтобы не потерять предупреждения из нашего собственного кода.
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.:starlette.exceptions.StarletteDeprecationWarning",
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.:DeprecationWarning",
+]

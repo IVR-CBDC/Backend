@@ -11,6 +11,7 @@ env:
   IMAGE_NAME_AUTH: ${{ github.repository }}/service-auth
   IMAGE_NAME_CORE: ${{ github.repository }}/service-core
   IMAGE_NAME_COMMISSION: ${{ github.repository }}/service-commission
+  IMAGE_NAME_CPP_BASE: ${{ github.repository }}/ivr-cpp-base
 
 jobs:
   build-and-push:
@@ -30,6 +31,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: docker/setup-buildx-action@v3
+
+      # --- Общий базовый образ (drogon/libjwt) для auth и core ---
+      # Пересобирается на каждый деплой, но благодаря cache-from/cache-to
+      # type=gha это дёшево (см. Task 1/4: сама сборка drogon с нуля ~15-19
+      # минут, из кэша — секунды). Пересобирать только при изменении
+      # cpp-base.Dockerfile через dorny/paths-filter намеренно не стали:
+      # это лишний движущийся шаг (обнаружение изменений, отдельный тег
+      # образа для пропущенных случаев) ради экономии, которую и так даёт
+      # кэш слоёв — а безусловная пересборка гарантирует, что ghcr всегда
+      # содержит актуальный ivr-cpp-base, даже если кто-то поменяет базовый
+      # Dockerfile в том же PR, где меняются и сервисы.
+      - name: Build and push ivr-cpp-base
+        uses: docker/build-push-action@v5
+        with:
+          context: infra/docker
+          file: infra/docker/cpp-base.Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CPP_BASE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       # --- Сборка и пуш Auth Service ---
       - name: Extract metadata for auth
         id: meta-auth
@@ -47,6 +70,8 @@ jobs:
           push: true
           tags: ${{ steps.meta-auth.outputs.tags }}
           labels: ${{ steps.meta-auth.outputs.labels }}
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CPP_BASE }}:latest
 
       # --- Сборка и пуш Core Service ---
       - name: Extract metadata for core
@@ -65,6 +90,8 @@ jobs:
           push: true
           tags: ${{ steps.meta-core.outputs.tags }}
           labels: ${{ steps.meta-core.outputs.labels }}
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CPP_BASE }}:latest
 
       # --- Сборка и пуш Commission Service ---
       - name: Extract metadata for commission

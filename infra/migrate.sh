@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 # полагаться только на конфликт при записи — его нужно вовсе не выполнять,
 # если версия уже применена.
 applied=0
-for file in $(ls "${MIGRATIONS_DIR}"/*.sql 2>/dev/null | sort); do
+# find вместо ls *.sql — не путает служебный вывод ls с именами файлов и
+# не ломается на несуществующем MIGRATIONS_DIR за счёт 2>/dev/null.
+for file in $(find "${MIGRATIONS_DIR}" -maxdepth 1 -name '*.sql' 2>/dev/null | sort); do
   filename=$(basename "$file")
   version=$(echo "$filename" | grep -oE '^[0-9]+' | sed 's/^0*//')
 

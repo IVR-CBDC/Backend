@@ -1,4 +1,4 @@
-.PHONY: keys cpp-base up down logs test-register test-login test-me smoke-commission test-commission test-commission-db test-cpp test-api smoke-deal lsp openapi \
+.PHONY: keys cpp-base up down logs test-register test-login test-me smoke-commission test-commission test-commission-db test-cpp test-api test-all smoke-deal lsp openapi \
        new-cpp new-python k3s-install k3s-import-images k3s-setup \
        k3s-build k3s-deploy k3s-deploy-data up-k3s down-k3s k3s-status \
        k3s-test-health k3s-test-auth k3s-test-core
@@ -70,6 +70,12 @@ test-api:
 		pg-core migrate-core service-core \
 		pg-commission migrate-commission service-commission redis
 	cd tests/api && uv run --with httpx --with pytest pytest -q
+
+# Три набора, что гоняет CI на каждый PR (см. .github/workflows/ci.yml).
+# test-commission-db сюда намеренно не входит: ему нужен поднятый
+# pg-commission с host-портом 5434, а не только `uv sync` — см. README.
+test-all: test-cpp test-commission test-api
+	@echo "Все наборы тестов пройдены"
 
 smoke-deal:
 	@if [ -z "$$TOKEN" ]; then echo "set TOKEN=..."; exit 1; fi

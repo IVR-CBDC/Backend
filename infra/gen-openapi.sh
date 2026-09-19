@@ -48,7 +48,7 @@ emit_schema() {
 
   IFS=',' read -ra pairs <<< "$json_str"
   for pair in "${pairs[@]}"; do
-    pair="$(echo "$pair" | sed 's/[" ]//g')"
+    pair="${pair//[\" ]/}"
     local key="${pair%%:*}"
     local val="${pair#*:}"
 
@@ -86,6 +86,9 @@ parse_headers() {
     method="" path="" summary="" has_auth=false body="" responses=""
 
     while IFS= read -r line; do
+      # sed читабельнее bash-эквивалента (extglob ради одного триммера не
+      # включаем) — подавляем стилевое замечание shellcheck об echo|sed.
+      # shellcheck disable=SC2001
       line="$(echo "$line" | sed 's/^[[:space:]]*//')"
 
       if [[ "$line" =~ ^//[[:space:]]*@(GET|POST|PUT|DELETE|PATCH)[[:space:]]+(.*) ]]; then
