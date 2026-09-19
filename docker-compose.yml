@@ -17,8 +17,8 @@ services:
     profiles: [build]
     image: ivr-cpp-base:latest
     build:
-      context: .
-      dockerfile: infra/docker/cpp-base.Dockerfile
+      context: infra/docker
+      dockerfile: cpp-base.Dockerfile
     command: ["true"]
     networks: [backend-net]
 
