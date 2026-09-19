@@ -43,6 +43,78 @@ jobs:
         run: shellcheck infra/*.sh
 
   # ============================================================
+  # helm (F4, final review): чарт до сих пор не проверялся ни одной джобой,
+  # а infra/gen-migration-values.sh течёт в него через values — поломка
+  # генератора или дрейф между сгенерированными values и infra/migrate.sh
+  # обнаруживались бы только при деплое в k3s. Джоба независимая (без
+  # needs): не зависит от cpp-base и не требует поднятого стенда.
+  # ============================================================
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: "Generate migration values (single source of truth: *.sql + infra/migrate.sh)"
+        run: |
+          for s in service-auth service-core service-commission; do
+            bash infra/gen-migration-values.sh "$s"
+          done
+
+      - name: helm lint
+        run: |
+          set -euo pipefail
+          for s in service-auth service-core service-commission; do
+            echo "=== helm lint $s ==="
+            helm lint infra/helm/generic-service \
+              -f "infra/helm/values-${s}.yaml" \
+              -f "infra/helm/generated/migrations-${s}.yaml"
+          done
+
+      - name: helm template
+        run: |
+          set -euo pipefail
+          for s in service-auth service-core service-commission; do
+            echo "=== helm template $s ==="
+            helm template "$s" infra/helm/generic-service \
+              -f "infra/helm/values-${s}.yaml" \
+              -f "infra/helm/generated/migrations-${s}.yaml" \
+              > "/tmp/${s}-rendered.yaml"
+          done
+
+      # Ловит ровно тот дрейф, который сейчас фактически есть в рабочем
+      # дереве: infra/helm/generated/*.yaml пишет старую версию скрипта,
+      # пока их никто не перегенерирует (Makefile/deploy.yml делают это
+      # сами перед деплоем, но рабочее дерево может отставать). Сравниваем
+      # data["migrate.sh"] отрендеренного ConfigMap с infra/migrate.sh
+      # побайтово, а не просто "файл сгенерировался" — именно расхождение
+      # содержимого и есть дефект, который нужно ловить.
+      - name: Check rendered migrate.sh matches infra/migrate.sh byte-for-byte
+        run: |
+          set -euo pipefail
+          cat > /tmp/check_migrate_drift.py <<'PY'
+          import sys, yaml
+          svc, path = sys.argv[1], sys.argv[2]
+          docs = [d for d in yaml.safe_load_all(open(path)) if d]
+          cm = docs[0]
+          rendered = cm["data"]["migrate.sh"]
+          original = open("infra/migrate.sh").read()
+          if rendered != original:
+              print(f"DRIFT: rendered migrate.sh for {svc} != infra/migrate.sh")
+              sys.exit(1)
+          print(f"OK: {svc} migrate.sh matches infra/migrate.sh byte-for-byte")
+          PY
+          for s in service-auth service-core service-commission; do
+            helm template "$s" infra/helm/generic-service \
+              -f "infra/helm/values-${s}.yaml" \
+              -f "infra/helm/generated/migrations-${s}.yaml" \
+              --show-only templates/migrations-configmap.yaml \
+              > "/tmp/${s}-migrations-cm.yaml"
+            python3 /tmp/check_migrate_drift.py "$s" "/tmp/${s}-migrations-cm.yaml"
+          done
+
+  # ============================================================
   # cpp: собирает ivr-cpp-base (с кэшем GHA) и внутри него гоняет workspace-
   # сборку с Catch2-тестами (FetchContent тянет Catch2 по сети при
   # конфигурации — сеть контейнеру доступна по умолчанию).
