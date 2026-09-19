@@ -8,9 +8,35 @@ MIGRATIONS_DIR="${1:-/app/migrations}"
 export PGPASSWORD="${DB_PASSWORD}"
 PSQL="psql -h ${DB_HOST} -p ${DB_PORT} -U ${DB_USER} -d ${DB_NAME} -v ON_ERROR_STOP=1 -X -q"
 
-# Create schema_migrations table. CREATE TABLE IF NOT EXISTS is its own
-# statement/transaction, but it's idempotent and harmless to race on.
+# Create schema_migrations table.
+#
+# F9 (final review, найдено живой перепроверкой): комментарий раньше
+# утверждал, что CREATE TABLE IF NOT EXISTS "harmless to race on" — это
+# неверно и воспроизводится стабильно (не иногда): при двух init-
+# контейнерах, стартующих одновременно на пустой БД, оба видят "таблицы
+# нет" и оба идут в CREATE TABLE — Postgres не сериализует это по
+# IF NOT EXISTS, и один из двух падает с
+# `duplicate key value violates unique constraint "pg_type_typname_nsp_index"`
+# (гонка на системном каталоге pg_type, а не на самой schema_migrations).
+# С `set -e` это валит весь migrate.sh целиком — ровно тот сценарий,
+# который per-migration pg_advisory_xact_lock ниже призван предотвращать,
+# просто на шаг раньше. Берём session-level pg_advisory_lock (не xact-lock,
+# как ниже, — здесь одно multi-statement соединение, не одна транзакция)
+# под другим ключом, чтобы сериализовать сам CREATE TABLE.
+# Лок сознательно не освобождается явным pg_advisory_unlock здесь: все
+# операторы в одном вызове `psql -c "стр1; стр2;"` выполняются в ОДНОЙ
+# неявной транзакции (так работает protocol простых запросов — коммит
+# только после последнего оператора строки), а session-level advisory lock
+# не привязан к транзакции и снялся бы сразу по SELECT pg_advisory_unlock,
+# ДО коммита CREATE TABLE. Тогда второй процесс, разблокированный до
+# коммита первого, берёт снимок каталога ДО того, как первый закоммитил
+# новую таблицу, не видит её и тоже идёт в CREATE TABLE — тот же
+# duplicate key на pg_type, просто на шаг позже (воспроизведено вживую).
+# Без явного unlock лок держится до конца сессии psql -c, то есть до
+# закрытия соединения ПОСЛЕ коммита — второй процесс встаёт в очередь и
+# видит уже закоммиченную таблицу.
 ${PSQL} -c "
+SELECT pg_advisory_lock(hashtext('ivr_migrations_ddl'));
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version   INTEGER PRIMARY KEY,
   filename  TEXT NOT NULL,
