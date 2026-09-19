@@ -7,11 +7,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # github.repository это формат owner/repo, например MyName/IVR-Backend
-  IMAGE_NAME_AUTH: ${{ github.repository }}/service-auth
-  IMAGE_NAME_CORE: ${{ github.repository }}/service-core
-  IMAGE_NAME_COMMISSION: ${{ github.repository }}/service-commission
-  IMAGE_NAME_CPP_BASE: ${{ github.repository }}/ivr-cpp-base
 
 jobs:
   build-and-push:
@@ -23,6 +18,16 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # F8 (final review): ghcr требует lowercase в имени пакета.
+      # github.repository сохраняет регистр владельца/репозитория как он
+      # заведён на GitHub — сейчас он и так нижний, но это не гарантия на
+      # будущее (переименование организации, форк с CamelCase-именем), а
+      # чинить постфактум для уже запушенных тегов сложнее, чем один раз
+      # привести явно.
+      - name: Lowercase repository name for ghcr
+        id: repo
+        run: echo "lc=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
@@ -43,13 +48,23 @@ jobs:
       # кэш слоёв — а безусловная пересборка гарантирует, что ghcr всегда
       # содержит актуальный ivr-cpp-base, даже если кто-то поменяет базовый
       # Dockerfile в том же PR, где меняются и сервисы.
+      #
+      # F5 (final review): раньше база пушилась только как :latest, а
+      # BASE_IMAGE сервисов ссылался на :latest — значит образ сервиса с
+      # тегом sha через месяц пересобрался бы на другой (более новой) базе,
+      # и два одновременных деплоя main дрались бы за один и тот же тег
+      # :latest. Теперь база тоже получает тег :${{ github.sha }}, и именно
+      # его сервисы передают в BASE_IMAGE — так тег сервиса детерминированно
+      # фиксирует, с какой версией базы он собран.
       - name: Build and push ivr-cpp-base
         uses: docker/build-push-action@v5
         with:
           context: infra/docker
           file: infra/docker/cpp-base.Dockerfile
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CPP_BASE }}:latest
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/ivr-cpp-base:latest
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/ivr-cpp-base:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -58,7 +73,7 @@ jobs:
         id: meta-auth
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_AUTH }}
+          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/service-auth
           tags: |
             type=sha,format=short
 
@@ -71,14 +86,14 @@ jobs:
           tags: ${{ steps.meta-auth.outputs.tags }}
           labels: ${{ steps.meta-auth.outputs.labels }}
           build-args: |
-            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CPP_BASE }}:latest
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/ivr-cpp-base:${{ github.sha }}
 
       # --- Сборка и пуш Core Service ---
       - name: Extract metadata for core
         id: meta-core
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CORE }}
+          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/service-core
           tags: |
             type=sha,format=short
 
@@ -91,14 +106,14 @@ jobs:
           tags: ${{ steps.meta-core.outputs.tags }}
           labels: ${{ steps.meta-core.outputs.labels }}
           build-args: |
-            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CPP_BASE }}:latest
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/ivr-cpp-base:${{ github.sha }}
 
       # --- Сборка и пуш Commission Service ---
       - name: Extract metadata for commission
         id: meta-commission
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_COMMISSION }}
+          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/service-commission
           tags: |
             type=sha,format=short
 
@@ -110,9 +125,10 @@ jobs:
           push: true
           tags: ${{ steps.meta-commission.outputs.tags }}
           labels: ${{ steps.meta-commission.outputs.labels }}
-          
+
     outputs:
       tag: ${{ fromJSON(steps.meta-auth.outputs.json).labels['org.opencontainers.image.version'] }} # берем sha тег
+      repo-lc: ${{ steps.repo.outputs.lc }}
 
   deploy:
     needs: build-and-push
@@ -154,7 +170,7 @@ jobs:
             helm upgrade --install service-auth ./generic-service --wait --timeout 5m \
               -f values-service-auth.yaml \
               -f generated/migrations-service-auth.yaml \
-              --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_AUTH }} \
+              --set image.repository=${{ env.REGISTRY }}/${{ needs.build-and-push.outputs.repo-lc }}/service-auth \
               --set image.tag=${{ needs.build-and-push.outputs.tag }} \
               --set "imagePullSecrets[0].name=ghcr-secret" \
               -n backend
@@ -163,7 +179,7 @@ jobs:
             helm upgrade --install service-core ./generic-service --wait --timeout 5m \
               -f values-service-core.yaml \
               -f generated/migrations-service-core.yaml \
-              --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CORE }} \
+              --set image.repository=${{ env.REGISTRY }}/${{ needs.build-and-push.outputs.repo-lc }}/service-core \
               --set image.tag=${{ needs.build-and-push.outputs.tag }} \
               --set "imagePullSecrets[0].name=ghcr-secret" \
               -n backend
@@ -172,7 +188,7 @@ jobs:
             helm upgrade --install service-commission ./generic-service --wait --timeout 5m \
               -f values-service-commission.yaml \
               -f generated/migrations-service-commission.yaml \
-              --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_COMMISSION }} \
+              --set image.repository=${{ env.REGISTRY }}/${{ needs.build-and-push.outputs.repo-lc }}/service-commission \
               --set image.tag=${{ needs.build-and-push.outputs.tag }} \
               --set "imagePullSecrets[0].name=ghcr-secret" \
               -n backend
