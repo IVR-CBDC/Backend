@@ -11,6 +11,14 @@
 #
 # При смене версии libjwt/drogon (или списка пакетов) — пересобрать:
 #   make cpp-base
+#
+# F6 (final review): версия Debian здесь (bookworm) — контракт с runtime-
+# стадиями services/service-auth/Dockerfile и services/service-core/Dockerfile
+# (debian:bookworm-slim + точные soname-пакеты libjsoncpp25/libhiredis0.14/
+# libssl3/...). При бампе версии здесь — менять все три места синхронно и
+# проверять `ldd` на собранный бинарь, иначе libdrogon*, скопированный из
+# новой build-стадии, слинкуется с другими so, чем те, что ставит runtime-
+# стадия.
 FROM debian:bookworm AS build
 
 # Объединение пакетов service-auth и service-core; libargon2-dev нужен

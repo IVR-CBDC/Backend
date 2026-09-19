@@ -9,6 +9,14 @@ RUN rm -rf build && mkdir build && cd build \
 	&& cmake -DCMAKE_BUILD_TYPE=Release -DCOMMON_LIB_DIR=/app/libs/common .. \
 	&& make -j$(nproc)
 
+# F6 (final review): релиз Debian здесь ОБЯЗАН совпадать с build-стадией
+# infra/docker/cpp-base.Dockerfile (сейчас debian:bookworm), а пакеты ниже —
+# с soname тех .so, что copy-стадия ниже берёт из /usr/local/lib собранного
+# там drogon/libjwt. При бампе базы менять bookworm здесь и в
+# service-core/Dockerfile синхронно и проверять `ldd` на собранный бинарь
+# (это же делает джоба api в CI, F6 final review) — иначе скопированный из
+# новой базы libdrogon* слинкуется с другими so, и бинарь либо не запустится
+# (undefined symbol / lib not found), либо соберётся, но не пройдёт мимо CI.
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

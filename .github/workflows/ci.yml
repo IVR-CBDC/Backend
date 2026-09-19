@@ -184,6 +184,25 @@ jobs:
       - name: Install psql client
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
+      # F6 (final review): дешёвый smoke на дрейф версий Debian между
+      # infra/docker/cpp-base.Dockerfile и runtime-стадиями сервисных
+      # Dockerfile — если soname разъехались, ldd покажет "not found" вместо
+      # падения только в рантайме на реальном трафике.
+      - name: ldd smoke (no "not found" against runtime libs)
+        run: |
+          set -euo pipefail
+          for pair in "service-auth:service_auth" "service-core:service_core"; do
+            svc="${pair%%:*}"; bin="${pair##*:}"
+            echo "=== ldd /usr/local/bin/${bin} (${svc}) ==="
+            out=$(docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+              exec -T "${svc}" ldd "/usr/local/bin/${bin}")
+            echo "$out"
+            if echo "$out" | grep -q "not found"; then
+              echo "::error::${svc}: ${bin} has unresolved shared libraries (Debian version drift between cpp-base and runtime stage?)"
+              exit 1
+            fi
+          done
+
       - uses: astral-sh/setup-uv@v5
 
       - name: pytest tests/api
