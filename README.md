@@ -138,6 +138,48 @@ Frontend-репозиторий будет запушен под `IVR-CBDC/Front
 чекаутить Frontend-репозиторий рядом и собирать оттуда, как это уже делает
 `docker-compose.override.yml.example` локально.
 
+## Frontend SPA (план 06)
+
+Стенд умеет поднимать сервис `frontend` — nginx со статикой SPA из
+Frontend-репозитория (`IVR-CBDC/Frontend`, локально `../alfa-cbdc-hub`),
+проксирующий `/api` и `/ws` на `bff`. Тот же паттерн, что у `bff` выше:
+Traefik про `frontend` пока не знает (план 08), профиль и образ ещё не
+опубликован.
+
+По умолчанию `docker-compose.yml` ссылается на
+`${FRONTEND_IMAGE:-ghcr.io/ivr-cbdc/frontend/spa:latest}` — этот образ CI
+Frontend-репозитория пока не публиковал, поэтому `frontend` объявлен с
+`profiles: ["frontend"]`: обычный `make up` его не трогает. Чтобы поднять
+именно `frontend`, называй его явно:
+
+```bash
+FRONTEND_IMAGE=<готовый образ> \
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait frontend
+```
+
+Для локальной сборки образа из соседнего checkout Frontend-репозитория:
+
+```bash
+cd ../alfa-cbdc-hub && docker build -t frontend-local:dev -f frontend/Dockerfile frontend
+cd -
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait bff frontend
+```
+
+(либо через `docker-compose.override.yml` по аналогии с `bff` — см. раздел
+выше, добавь в него свой блок `frontend`, указав `image: frontend-local:dev`
+собранного выше образа).
+
+`frontend` ждёт `service_healthy` от `bff` и сам публикует healthcheck по
+`/` (проверяем, что nginx реально отдаёт HTML страницу) — `--wait` не
+сочтёт стенд готовым, пока nginx не поднялся. С хоста SPA доступен только
+через порт, проброшенный dev-оверлеем:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+  --profile bff --profile frontend up -d --wait
+# http://127.0.0.1:8090 — порт открыт только docker-compose.dev.yml
+```
+
 ## Структура
 
 ```

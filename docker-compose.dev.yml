@@ -31,3 +31,14 @@ services:
   bff:
     ports:
       - "127.0.0.1:14000:4000"   # для ручной проверки /health и /api/* с хоста
+    environment:
+      # Дополняем (не заменяем) список origin'ов из docker-compose.yml:
+      # origin браузера при заходе на SPA через host-порт dev-оверлея
+      # (127.0.0.1:8090) иначе не пройдёт проверку CSRF на мутирующих
+      # запросах (см. README «Контракт для SPA», FORBIDDEN_ORIGIN) — без
+      # этого сквозной сценарий из браузера (Step 3 плана 06) не пройти.
+      ALLOWED_ORIGINS: http://localhost:5173,http://localhost,http://127.0.0.1:8090
+
+  frontend:
+    ports:
+      - "127.0.0.1:8090:80"   # для ручной проверки SPA в браузере с хоста

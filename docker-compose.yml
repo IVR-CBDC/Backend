@@ -275,3 +275,29 @@ services:
       retries: 20
       start_period: 5s
     networks: [backend-net]
+
+  # ============================================================
+  # Frontend SPA (план 06, Frontend-репозиторий) — nginx со статикой,
+  # проксирующий /api и /ws на bff. Тот же паттерн, что у bff выше: образ
+  # ghcr.io/ivr-cbdc/frontend/spa CI Frontend-репозитория пока не
+  # публиковал, поэтому сервис под своим профилем — обычный `make up` его
+  # не трогает и не пытается тянуть несуществующий образ. Для локальной
+  # сборки из ../alfa-cbdc-hub — свой блок в
+  # docker-compose.override.yml.example (frontend/Dockerfile). Traefik
+  # сюда пока не смотрит — внешняя маршрутизация это план 08.
+  # ============================================================
+  frontend:
+    image: ${FRONTEND_IMAGE:-ghcr.io/ivr-cbdc/frontend/spa:latest}
+    profiles: ["frontend"]
+    depends_on:
+      bff: { condition: service_healthy }
+    healthcheck:
+      # nginx сам ничего не знает о готовности бэкенда за ним — проверяем
+      # только то, что nginx реально отдаёт SPA (страница на "/"), как и
+      # положено liveness/readiness-проверке статического сервера.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ | grep -qi '<html' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks: [backend-net]
