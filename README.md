@@ -51,11 +51,22 @@ make smoke-deal       # сквозная сделка: создать → сце
 make test-api         # pytest против поднятого стенда (EMULATOR_MANUAL=true)
 ```
 
+`make up` наружу отдаёт только traefik (порт 80) и его дашборд (8081) — так
+локальная топология совпадает с прод. Host-порты сервисов и БД (18080,
+18081, 5433–5435, для тестов и ручной отладки) публикует только оверлей
+`docker-compose.dev.yml`, который `make test-api` и `make test-commission-db`
+подключают автоматически:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait
+```
+
 ## Структура
 
 ```
 backend-platform/
 ├── docker-compose.yml                # 3 сервиса + 3 БД + Redis + Traefik
+├── docker-compose.dev.yml            # оверлей: host-порты сервисов и БД (только для тестов/отладки)
 ├── Makefile
 ├── infra/
 │   ├── gen-keys.sh                   # ./gen-keys.sh — RSA для JWT

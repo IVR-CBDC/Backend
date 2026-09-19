@@ -80,7 +80,8 @@ def stack_ready(auth_url: str, core_url: str) -> None:
 
     if pending:
         pytest.fail(
-            "Стенд не поднялся за {}s: не отвечают {} (проверьте `docker compose up`, "
+            "Стенд не поднялся за {}s: не отвечают {} (подними стенд командой `make test-api` — "
+            "она включает docker-compose.dev.yml с проброшенными портами; либо проверь "
             "AUTH_URL/CORE_URL или `docker compose logs`)".format(READY_TIMEOUT_SEC, ", ".join(pending))
         )
 

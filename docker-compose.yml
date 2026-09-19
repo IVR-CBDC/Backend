@@ -46,8 +46,6 @@ services:
       POSTGRES_USER: auth
       POSTGRES_PASSWORD: auth
       POSTGRES_DB: auth
-    ports:
-      - "127.0.0.1:5433:5432"   # для ручной отладки и api-тестов
     volumes:
       - pg_auth_data:/var/lib/postgresql/data
     healthcheck:
@@ -62,8 +60,6 @@ services:
       POSTGRES_USER: core
       POSTGRES_PASSWORD: core
       POSTGRES_DB: core
-    ports:
-      - "127.0.0.1:5435:5432"   # для api-тестов и ручной отладки
     volumes:
       - pg_core_data:/var/lib/postgresql/data
     healthcheck:
@@ -78,8 +74,6 @@ services:
       POSTGRES_USER: commission
       POSTGRES_PASSWORD: commission
       POSTGRES_DB: commission
-    ports:
-      - "127.0.0.1:5434:5432"   # только для локальных db-тестов
     volumes:
       - pg_commission_data:/var/lib/postgresql/data
     healthcheck:
@@ -166,13 +160,19 @@ services:
       SERVICE_PORT: "8080"
       JWT_PRIVATE_KEY_PATH: /etc/keys/jwt_private.jwk
       JWT_PUBLIC_KEY_PATH: /etc/keys/jwt_public.jwk
-    ports:
-      - "127.0.0.1:18080:8080"   # для tests/api (make test-api)
     volumes:
       - ./infra/keys:/etc/keys:ro
     depends_on:
       migrate-auth: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
+    healthcheck:
+      # /health всегда отвечает 200 (см. health.cc): статус — в теле, ok=false
+      # при недоступном Postgres, поэтому проверяем не только код ответа.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health | grep -q '\"ok\":true' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     networks: [backend-net]
 
   service-core:
@@ -193,13 +193,19 @@ services:
       EMULATOR_ENABLED: "true"
       EMULATOR_SPEED: demo
       EMULATOR_MANUAL: "${EMULATOR_MANUAL:-false}"
-    ports:
-      - "127.0.0.1:18081:8080"   # для tests/api (make test-api)
     volumes:
       - ./infra/keys/jwt_public.jwk:/etc/keys/jwt_public.jwk:ro
     depends_on:
       migrate-core: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
+    healthcheck:
+      # core's /health тоже всегда 200 — Postgres/Redis отражены в теле как
+      # postgres_ok/redis_ok/ok, поэтому проверяем ok:true, а не только код.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health | grep -q '\"ok\":true' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     networks: [backend-net]
 
   service-commission:

@@ -47,8 +47,8 @@ test-commission:
 	cd services/service-commission && uv run pytest -q -m "not db"
 
 test-commission-db:
-	docker compose up -d pg-commission migrate-commission
-	docker compose wait migrate-commission
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d pg-commission migrate-commission
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml wait migrate-commission
 	cd services/service-commission && \
 		TEST_PG_DSN=postgresql+asyncpg://commission:commission@127.0.0.1:5434/commission \
 		uv run pytest -q -m db
@@ -62,9 +62,10 @@ smoke-commission:
 
 # Поднимает стенд в детерминированном режиме эмулятора (EMULATOR_MANUAL=true,
 # см. docker-compose.yml) и гоняет tests/api против него через проброшенные
-# порты 18080/18081.
+# порты 18080/18081 — доступные только с docker-compose.dev.yml (host-порты
+# не публикуются в обычном docker-compose.yml, см. Task 3).
 test-api:
-	EMULATOR_MANUAL=true docker compose up -d --build \
+	EMULATOR_MANUAL=true docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build \
 		pg-auth migrate-auth service-auth \
 		pg-core migrate-core service-core \
 		pg-commission migrate-commission service-commission redis

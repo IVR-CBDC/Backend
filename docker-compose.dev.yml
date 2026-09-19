@@ -1,0 +1,29 @@
+# Dev-оверлей: пробрасывает наружу порты сервисов и БД для ручной отладки и
+# для тестов, которые ходят в стенд с хоста (tests/api, service-commission
+# db-тесты). Обычный `make up` (без этого файла) наружу отдаёт только
+# traefik — так продовая топология (единая точка входа) не расходится
+# с тем, что открыто на dev-машине.
+#
+# Использование: docker compose -f docker-compose.yml -f docker-compose.dev.yml up ...
+# (см. `make test-api`, `make test-commission-db`).
+
+services:
+  pg-auth:
+    ports:
+      - "127.0.0.1:5433:5432"   # для ручной отладки и api-тестов
+
+  pg-core:
+    ports:
+      - "127.0.0.1:5435:5432"   # для api-тестов и ручной отладки
+
+  pg-commission:
+    ports:
+      - "127.0.0.1:5434:5432"   # для локальных db-тестов
+
+  service-auth:
+    ports:
+      - "127.0.0.1:18080:8080"   # для tests/api (make test-api)
+
+  service-core:
+    ports:
+      - "127.0.0.1:18081:8080"   # для tests/api (make test-api)

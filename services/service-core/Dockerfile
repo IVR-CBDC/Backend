@@ -14,6 +14,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libjsoncpp25 libssl3 libpq5 libhiredis0.14 \
     libuuid1 zlib1g libjansson4 libgnutls30 gettext-base \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /usr/local/lib/libjwt* /usr/local/lib/
