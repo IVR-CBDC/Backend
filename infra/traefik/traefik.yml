@@ -2,6 +2,10 @@ api:
   dashboard: true
   insecure: true
 
+# Для healthcheck контейнера в docker-compose.yml (`traefik healthcheck --ping`).
+# Слушает на служебном entryPoint `traefik` (:8080), наружу он и так был открыт.
+ping: {}
+
 entryPoints:
   web:
     address: ":80"

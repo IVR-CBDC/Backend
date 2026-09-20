@@ -1,33 +1,63 @@
+# Динамическая конфигурация Traefik для compose-стенда.
+#
+# Периметр (спека §3, план 08): наружу публикуются ТОЛЬКО frontend и bff.
+# Прямые роутеры `/api/auth` → service-auth и `/api/core` → service-core
+# убраны — auth/core/commission доступны лишь внутри compose-сети
+# (в k3s то же самое обеспечивает NetworkPolicy чарта generic-service).
+#
+# Внутренняя ручка эмулятора service-core `POST /internal/emulator/tick`
+# (спека §4.3) наружу не публикуется и здесь тоже: e2e дёргают её не через
+# Traefik, а через host-порт 18081 из docker-compose.dev.yml
+# (см. e2e/fixtures/stand.ts во Frontend-репозитории, CORE_URL).
+#
+# Этот файл обрабатывается Go-шаблонизатором file-провайдера Traefik
+# (проверено на traefik:v2.10 — см. отчёт task-1), поэтому список
+# источников CORS приезжает из переменной окружения контейнера Traefik
+# CORS_ALLOWED_ORIGINS (задаётся в docker-compose.yml, там же дефолт со
+# адресами стенда). Звёздочки здесь быть не должно: сессия живёт в cookie
+# (BFF, спека §3.1), а `*` с credentials — плохая пара.
+{{- $origins := splitList "," (env "CORS_ALLOWED_ORIGINS" | default "http://localhost,http://127.0.0.1,http://127.0.0.1:8090,http://localhost:5173") }}
+
 http:
   middlewares:
     cors:
       headers:
-        accessControlAllowOriginList: "*"
+        accessControlAllowOriginList:
+          {{- range $origins }}
+          - {{ . | trim | quote }}
+          {{- end }}
         accessControlAllowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
         accessControlAllowHeaders: ["Authorization", "Content-Type"]
+        accessControlAllowCredentials: true
         accessControlMaxAge: 600
 
   routers:
-    auth:
-      rule: "PathPrefix(`/api/auth`)"
-      service: auth
+    # BFF — единственная дверь для API и WebSocket.
+    # priority задан явно: по умолчанию Traefik считает приоритет длиной
+    # правила, и хотя это правило и так длиннее `PathPrefix(`/`)`, полагаться
+    # на длину нельзя — любое сокращение правила молча отдало бы /api фронту.
+    bff:
+      rule: "PathPrefix(`/api`) || PathPrefix(`/ws`)"
+      priority: 100
+      service: bff
       middlewares: [cors]
       entryPoints: [web]
 
-    core:
-      rule: "PathPrefix(`/api/core`)"
-      service: core
-      middlewares: [cors]
+    # SPA — всё остальное. Явно низкий приоритет.
+    frontend:
+      rule: "PathPrefix(`/`)"
+      priority: 1
+      service: frontend
       entryPoints: [web]
 
   services:
-    auth:
+    bff:
       loadBalancer:
         servers:
-          - url: "http://service-auth:8080"
+          - url: "http://bff:4000"
 
-    core:
+    # nginxinc/nginx-unprivileged слушает 8080, а не 80.
+    frontend:
       loadBalancer:
         servers:
-          - url: "http://service-core:8080"
-
+          - url: "http://frontend:8080"
