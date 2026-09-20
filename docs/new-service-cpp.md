@@ -311,22 +311,18 @@ networkPolicy:
   allowFrom:
     - app.kubernetes.io/name: bff
 
-# runAsUser обязателен: без него kubelet не стартует контейнер под
-# runAsNonRoot, если образ не объявляет числовой USER. Рендер чарта падает,
-# если runAsNonRoot: true стоит без runAsUser.
-podSecurityContext:
-  runAsNonRoot: true
-  runAsUser: 1000
-  runAsGroup: 1000
-  seccompProfile:
-    type: RuntimeDefault
-
-securityContext:
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities:
-    drop:
-      - ALL
+# podSecurityContext и securityContext здесь НЕ переопределяются: дефолты
+# чарта (runAsNonRoot, runAsUser/runAsGroup/fsGroup 65532,
+# seccompProfile RuntimeDefault, allowPrivilegeEscalation: false,
+# readOnlyRootFilesystem: true, capabilities drop ALL) — то, на чём идут
+# service-auth, service-core и service-commission. Своё значение runAsUser
+# задают только bff (1000) и frontend (101), и ровно потому, что их образы
+# собраны под другим uid. Не выдумывай uid новому сервису: если образ
+# требует иного, поставь именно его, иначе оставь дефолт.
+#
+# runAsUser не может быть пустым: без него kubelet не стартует контейнер
+# под runAsNonRoot, если образ не объявляет числовой USER. Рендер чарта
+# падает, если runAsNonRoot: true стоит без runAsUser.
 
 # Drogon при старте создаёт ./uploads/tmp/00 … FF относительно cwd; с
 # read-only корнем без этого тома он печатает 256 строк ERROR на рестарт.

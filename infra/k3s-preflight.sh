@@ -12,7 +12,14 @@
 # проверки прогоняются по всем строкам, потом выкатывается.
 #
 # Использование:
-#   sh infra/k3s-preflight.sh <путь к services.tsv> [сервис ...]
+#   sh infra/k3s-preflight.sh [--tags-only] <путь к services.tsv> [сервис ...]
+#
+# --tags-only — проверять только теги образов, без паролей. Нужен там, где
+# паролей нет и быть не должно: на раннере GitHub Actions перед `docker
+# manifest inspect`. Порядок там важен — заглушка `latest` в
+# frontend-tags.env даёт в реестре отсутствующий образ, и без этой проверки
+# первым красным сообщением было бы «образа нет или он недоступен токену»,
+# после чего человек ушёл бы разбираться с правами ghcr вместо тега.
 #
 # Пароли БД читаются ИЗ ОКРУЖЕНИЯ по именам из последней колонки tsv:
 # локально их экспортирует Makefile из infra/helm/secrets-k3s.env, в CD они
@@ -23,6 +30,12 @@
 # без кластера проверка пароля против базы пропускается (и говорит об этом),
 # но остальные проверки работают всегда.
 set -eu
+
+TAGS_ONLY=0
+if [ "${1-}" = "--tags-only" ]; then
+    TAGS_ONLY=1
+    shift
+fi
 
 TSV="${1:?первым аргументом — путь к services.tsv}"
 shift
@@ -102,7 +115,7 @@ while read -r name build cppbase mig tagsrc pwvar; do
     fi
 
     # --- пароль БД ---
-    if [ "$pwvar" != "-" ]; then
+    if [ "$pwvar" != "-" ] && [ "$TAGS_ONLY" = 0 ]; then
         eval "pw=\${$pwvar-}"
         if [ -z "$pw" ]; then
             note "$name: пароль \$$pwvar не задан в окружении."
@@ -140,4 +153,8 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "preflight: ok ($(wc -l < "$ROWS" | tr -d ' ') сервис(ов))"
+if [ "$TAGS_ONLY" = 1 ]; then
+    echo "preflight (только теги): ok ($(wc -l < "$ROWS" | tr -d ' ') сервис(ов))"
+else
+    echo "preflight: ok ($(wc -l < "$ROWS" | tr -d ' ') сервис(ов))"
+fi

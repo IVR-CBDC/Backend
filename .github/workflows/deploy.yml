@@ -229,6 +229,17 @@ jobs:
           IMAGE_PREFIX: ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}
         run: |
           set -euo pipefail
+
+          # ПЕРВОЙ — проверка неизменяемости тега, и порядок здесь
+          # содержательный. Пока в frontend-tags.env стоит заглушка
+          # `latest`, образа с таким тегом в реестре нет, и без этой
+          # проверки первым красным сообщением прогона было бы «образа нет
+          # или он недоступен этому токену» — человек ушёл бы разбираться с
+          # правами ghcr, хотя причина в том, что dispatch из
+          # alfa-cbdc-hub ещё не приходил. Объяснение живёт в скрипте, и
+          # прогон обязан до него дойти.
+          sh infra/k3s-preflight.sh --tags-only infra/services.tsv
+
           . ./infra/helm/frontend-tags.env
           awk '!/^[[:space:]]*#/ && NF' infra/services.tsv > /tmp/rows
           fail=0

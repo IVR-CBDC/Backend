@@ -234,21 +234,17 @@ networkPolicy:
   allowFrom:
     - app.kubernetes.io/name: bff
 
-podSecurityContext:
-  runAsNonRoot: true
-  # Явный числовой uid обязателен: нечисловой `USER app` в образе kubelet
-  # доказательством «не root» не считает и контейнер не стартует.
-  runAsUser: 1000
-  runAsGroup: 1000
-  seccompProfile:
-    type: RuntimeDefault
-
-securityContext:
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities:
-    drop:
-      - ALL
+# podSecurityContext и securityContext здесь НЕ переопределяются: дефолты
+# чарта (runAsNonRoot, runAsUser/runAsGroup/fsGroup 65532,
+# seccompProfile RuntimeDefault, allowPrivilegeEscalation: false,
+# readOnlyRootFilesystem: true, capabilities drop ALL) — то, на чём идёт и
+# service-commission. Своё значение runAsUser задают только bff (1000) и
+# frontend (101): их образы собраны под другим uid. Новому сервису свой uid
+# не выдумывай — либо тот, которого требует образ, либо дефолт.
+#
+# Числовой uid обязателен: нечисловой `USER app` в образе kubelet
+# доказательством «не root» не считает и контейнер не стартует. Поэтому
+# рендер чарта падает, если runAsNonRoot: true стоит без runAsUser.
 
 healthcheck:
   path: /health

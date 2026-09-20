@@ -286,9 +286,15 @@ K3S_MIGRATED_SERVICES := $(shell $(TSV_ROWS) | awk '$$4=="yes" {print $$1}')
 # Пустой или нечитаемый services.tsv не должен превращаться в тихий no-op.
 # Опаснее всего down-k3s: `helm uninstall -n backend` без аргументов — это
 # не «ничего не делать», это ошибка использования, которую легко не
-# заметить среди вывода. Ошибка здесь останавливает любую k3s-цель.
+# заметить среди вывода.
+#
+# Проверка ограничена k3s-целями намеренно: $(error) на верхнем уровне
+# валил бы и `make test-cpp`, и `make up`, которые к k3s отношения не имеют
+# и прекрасно работают без этого файла.
+ifneq ($(filter k3s-% up-k3s down-k3s,$(MAKECMDGOALS)),)
 ifeq ($(strip $(K3S_SERVICES)),)
 $(error $(SERVICES_TSV) пуст или нечитаем: список сервисов не прочитан. Ни одна k3s-цель работать не будет)
+endif
 endif
 
 # --- Секреты локального выката ---
@@ -322,8 +328,11 @@ k3s-secrets:
 	fi; \
 	for s in $(K3S_MIGRATED_SERVICES); do \
 		v=$$($(TSV_ROWS) | awk -v s=$$s '$$1==s {print $$6}'); \
-		if grep -q "^$$v=" $(K3S_SECRETS_ENV); then \
+		if grep -q "^$$v=." $(K3S_SECRETS_ENV); then \
 			echo "$$v — уже есть, не трогаю"; \
+		elif grep -q "^$$v=$$" $(K3S_SECRETS_ENV); then \
+			sed -i "s|^$$v=$$|$$v=$$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)|" $(K3S_SECRETS_ENV); \
+			echo "$$v — был пустым, заполнен"; \
 		else \
 			echo "$$v=$$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)" >> $(K3S_SECRETS_ENV); \
 			echo "$$v — сгенерирован"; \
@@ -371,7 +380,15 @@ k3s-build: $(addprefix k3s-build-,$(K3S_BUILD_SERVICES))
 # случайно — только сейчас известны обе стороны: что в базе (старый Secret
 # соответствует тому, чем PVC инициализировали) и что мы собираемся
 # поставить. После upgrade первая сторона теряется.
-k3s-deploy-data: k3s-secrets-check
+#
+# k3s-preflight — предпосылка, а не соседний пункт в списке у k3s-deploy:
+# слой данных это ПЕРВОЕ, что меняется в кластере, и проверки обязаны
+# пройти до него. Перечисление `k3s-deploy: k3s-deploy-data k3s-preflight`
+# этого не давало: предпосылки выполняются слева направо только без `-j`, и
+# при заглушке `latest` в frontend-tags.env цель успевала проапгрейдить три
+# Postgres и redis, а потом печатала «выкат не начинался». Здесь порядок —
+# настоящая зависимость, от режима make не зависящая.
+k3s-deploy-data: k3s-secrets-check k3s-preflight
 	@set -eu; . ./$(K3S_SECRETS_ENV); \
 	for s in $(K3S_MIGRATED_SERVICES); do \
 		short=$${s#service-}; \
@@ -464,7 +481,9 @@ k3s-preflight: k3s-secrets-check
 # Последовательно и в порядке файла, а не через список зависимостей:
 # зависимости make под `-j` выполняются параллельно, а порядок
 # auth → bff → frontend обязателен (см. шапку infra/services.tsv).
-k3s-deploy: k3s-deploy-data k3s-preflight
+# k3s-preflight здесь не повторяется: он уже предпосылка k3s-deploy-data,
+# то есть гарантированно проходит до первого изменения в кластере.
+k3s-deploy: k3s-deploy-data
 	@set -e; for s in $(K3S_SERVICES); do $(MAKE) --no-print-directory k3s-deploy-$$s; done
 
 # --- Full cycle ---
