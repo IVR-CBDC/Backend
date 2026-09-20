@@ -163,6 +163,11 @@ healthcheck по `/ready` (`{"ok":true,...}`, F10 final review — `/health` т�
 сочтёт стенд готовым, пока BFF не сможет говорить со всеми апстримами. SPA
 (`frontend/`) в стенд пока не входит — это план 06.
 
+В k3s это же разделение разнесено по пробам (`infra/helm/values-bff.yaml`):
+`livenessProbe` → `/health`, `readinessProbe` → `/ready`. Порядок важен: с
+liveness на `/ready` недоступный auth перезапускал бы совершенно здоровый
+BFF по кругу — ровно то, ради чего ручки и разделяли.
+
 CI Backend-репозитория (`.github/workflows/ci.yml`, джоба `api`) сознательно
 **не** поднимает `bff`: у него нет ни исходников bff (они в
 Frontend-репозитории), ни доступа к опубликованному образу (см. абзац выше)
@@ -485,3 +490,65 @@ apt-пакетов в `cpp-base.Dockerfile` — изменения кода `ser
   с адреса узла, и такой трафик надо разрешать подсетью узлов, а не
   `namespaceSelector` (правила `kube-system` здесь намеренно нет — оно
   пустило бы к сервисам ещё и Traefik, CoreDNS, metrics-server).
+- У `bff` и `frontend` `networkPolicy.enabled: false`, и это не забытый
+  флаг: к ним ходит Traefik — под из **другого** namespace (в k3s это
+  `kube-system`), чьи метки без живого кластера неизвестны. Неверный
+  `podSelector` здесь молча закрыл бы единственный вход в систему. Правило
+  дописывается при первом выкате, по фактическим меткам пода Traefik.
+
+### Секреты в k3s — и почему в compose пароли открыты (план 08)
+
+Это осознанное разделение, а не недоделка.
+
+- **k3s.** Пароли БД не лежат в `infra/helm/values-*.yaml`. Каждый релиз с
+  БД объявляет `secrets.enabled: true`, а значения приезжают снаружи git —
+  из CD или из файла, который не коммитится:
+
+  ```bash
+  helm upgrade --install service-auth infra/helm/generic-service \
+    -f infra/helm/values-service-auth.yaml \
+    -f infra/helm/generated/migrations-service-auth.yaml \
+    -n backend --set secrets.data.dbPassword='<пароль>'
+
+  # service-commission берёт из Secret не пароль, а весь DSN: пароль там —
+  # часть строки подключения, и вынести отдельно его нельзя, не собирая DSN
+  # внутри сервиса.
+  --set secrets.data.dbPassword='<пароль>' \
+  --set secrets.data.pgDsn='postgresql+asyncpg://commission:<пароль>@pg-commission-postgresql.data.svc.cluster.local:5432/commission'
+  ```
+
+  Пароль подтягивают и сервис, и init-контейнер миграций
+  (`migrations.db.passwordSecretKey`) — из одного и того же Secret'а, иначе
+  секрет защищал бы половину пути. У auth и core `config.json` содержит
+  `db_clients[].passwd`, поэтому он едет **Secret'ом, а не ConfigMap**
+  (`config.secret: true`): выносить пароль в Secret бессмысленно, если он же
+  рядом лежит в ConfigMap, который отдаётся любому с `get configmaps`.
+  Забыть `--set` нельзя: рендер падает с явным сообщением, а не выкатывает
+  сервис с пустым паролем.
+
+- **compose.** Здесь пароли (`auth`/`core`/`commission`) остаются **открытым
+  текстом** в `docker-compose.yml`, и так и задумано: это локальный стенд,
+  который поднимается одной командой на машине разработчика, ходит по http и
+  не хранит ничего ценного. Заводить для него секрет-менеджер значит платить
+  сложностью за защиту от несуществующей угрозы. **Compose от этого не стал
+  защищённым — он им и не был.** Наружу его публиковать нельзя.
+
+### Непривилегированные поды (план 08)
+
+Все пять подов: `runAsNonRoot: true`, `allowPrivilegeEscalation: false`,
+`capabilities: drop: [ALL]`, `seccompProfile: RuntimeDefault`.
+
+- `runAsUser` задаётся **явно** в values каждого сервиса. Без него kubelet
+  отказывается стартовать контейнер: образы auth и core не объявляют `USER`
+  вовсе, а commission объявляет нечисловой `USER app` — доказать, что
+  процесс не root, kubelet не может ни в том, ни в другом случае. Рендер
+  чарта падает, если `runAsNonRoot: true` стоит без `runAsUser`.
+- `readOnlyRootFilesystem: true` у четырёх сервисов. Исключение одно —
+  `frontend`: nginx при каждом старте пишет в `/var/cache/nginx`,
+  `/tmp/nginx.pid` и правит `/etc/nginx/conf.d` скриптами
+  `docker-entrypoint.d`. Выключено **точечно, в `values-frontend.yaml`**, а
+  не в чарте: остальные четыре защиту сохраняют. Лечится emptyDir-томами на
+  эти каталоги, но подобрать их набор можно только на живом кластере.
+- Образ SPA — `nginxinc/nginx-unprivileged` и слушает **8080**, а не 80:
+  привязка к порту ниже 1024 требует root, под `runAsNonRoot` стоковый
+  `nginx:alpine` не стартует вообще.
