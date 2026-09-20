@@ -223,6 +223,18 @@ bff/frontend после правки) пересоздавал `service-core` с
 BFF_IMAGE=bff-ci:latest FRONTEND_IMAGE=frontend-ci:latest make e2e-stand-up
 ```
 
+**F2 (план 07, final review) — порядок мержа:** цель `e2e-stand-up` живёт
+только в ветке `feat/e2e-support` этого репозитория, не в его ветке по
+умолчанию. Frontend-репозиторий (`.github/workflows/ci.yml`, джоба `e2e`)
+чекаутит Backend без `ref:`, то есть его default branch — эта джоба не
+сможет пройти, пока `feat/e2e-support` не будет влита. Мерж Backend-ветки —
+обязательное условие ДО того, как e2e-джоба Frontend CI сможет стать
+зелёной, не наоборот.
+
+**F8 (план 07, final review):** `make e2e-stand-down` не возвращает
+`service-core` в автоматический режим эмулятора — см. предупреждение в
+выводе самой цели и комментарий над ней в `Makefile`.
+
 ## Структура
 
 ```

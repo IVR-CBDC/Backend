@@ -40,7 +40,15 @@ services:
       # мутирующих запросах (см. README «Контракт для SPA»,
       # FORBIDDEN_ORIGIN) — без этого сквозной сценарий из браузера (Step 3
       # плана 06) не пройти.
-      ALLOWED_ORIGINS: http://localhost:5173,http://localhost,http://127.0.0.1:8090
+      #
+      # F6 (план 07, final review): раньше значение было захардкожено
+      # литералом — docker-compose.yml параметризует его через
+      # `${ALLOWED_ORIGINS:-...}` с комментарием «план 08 задаст через env»,
+      # но e2e-стенд всегда поднимается с этим dev-оверлеем (см.
+      # `make e2e-stand-up`), а он полностью заменяет ключ `environment`, а
+      # не дополняет — то есть рычаг для плана 08 был мёртв именно там, где
+      # нужен. Тот же паттерн `${ALLOWED_ORIGINS:-...}` здесь, тот же дефолт.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost,http://127.0.0.1:8090}
 
   frontend:
     ports:

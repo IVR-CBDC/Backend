@@ -118,9 +118,23 @@ e2e-stand-up: keys
 
 # Останавливает только bff/frontend — не трогает остальной стенд (auth/core/
 # commission/БД), он может быть нужен для чего-то ещё (make test-api и т.п.).
+#
+# F8 (план 07, final review): эта цель НЕ возвращает service-core в
+# автоматический режим — EMULATOR_MANUAL=true, выставленный e2e-stand-up,
+# так и остаётся на контейнере. Разработчик, вернувшийся к ручной работе со
+# стендом после e2e, увидит сделки, которые сами никуда не двигаются, без
+# единой ошибки (тикать некому — воркфлоу тика нет, фоновый цикл выключен).
+# Печатаем это явно вместо тихого пересоздания core с EMULATOR_MANUAL=false
+# — пересоздание само по себе может быть нежелательным посреди чужой сессии
+# отладки (например, если e2e-stand-down вызван между двумя e2e-прогонами).
 e2e-stand-down:
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml \
 		--profile bff --profile frontend stop bff frontend
+	@echo ""
+	@echo "bff/frontend остановлены. service-core остаётся в EMULATOR_MANUAL=true"
+	@echo "(сделки не будут двигаться сами по времени). Чтобы вернуть живой"
+	@echo "автопрогресс: EMULATOR_MANUAL=false docker compose -f docker-compose.yml \\"
+	@echo "  -f docker-compose.dev.yml up -d --wait service-core"
 
 # Три набора, что гоняет CI на каждый PR (см. .github/workflows/ci.yml).
 # test-commission-db сюда намеренно не входит: ему нужен поднятый
