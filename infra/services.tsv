@@ -1,0 +1,42 @@
+# Единый список выкатываемых сервисов. Его читают ОБА механизма выката:
+# Makefile (цели k3s-*) и .github/workflows/deploy.yml (сборка образов и
+# helm upgrade). Добавление шестого сервиса — строка здесь, а не правка в
+# двух местах, из которых одно забудут.
+#
+# ПОРЯДОК СТРОК = ПОРЯДОК ВЫКАТА, и это не оформление. Две зависимости
+# старта проверены и воспроизведены (README, «Порядок выката»):
+#   * bff тянет публичный ключ auth ДО того, как поднимет сервер, и без
+#     живого auth падает на старте. Разделение /health и /ready не спасает:
+#     до проб дело не доходит.
+#   * frontend (nginx) резолвит имя `bff` при разборе конфига, на старте, и
+#     без пода bff падает с `[emerg] host not found in upstream "bff"`.
+# Отсюда: service-auth → … → bff → frontend. service-core и
+# service-commission зависят только от слоя данных (Postgres/Redis, цель
+# k3s-deploy-data): ключ JWT они читают из файла, а core ходит в commission
+# лениво, при первом сценарии, а не при старте (services/service-core/src/
+# commission_client.cc — статический HttpClient создаётся в первом вызове).
+# Поэтому их место в списке между auth и bff произвольно; место auth, bff и
+# frontend — нет.
+#
+# Колонки (разделитель — пробелы, строки с # и пустые игнорируются):
+#
+#   service      имя релиза Helm, оно же имя каталога services/<имя> для
+#                собираемых здесь сервисов и имя values-<имя>.yaml
+#   build        yes — образ собирается в ЭТОМ репозитории (Dockerfile здесь);
+#                no  — образ приезжает из alfa-cbdc-hub, тут только выкатывается
+#   cpp-base     yes — Dockerfile ждёт build-arg BASE_IMAGE с ivr-cpp-base
+#   migrations   yes — у сервиса есть services/<имя>/migrations и ему нужен
+#                      -f generated/migrations-<имя>.yaml; no — файла нет и
+#                      не будет, требовать его от выката нельзя
+#   image-tag    sha — тег образа = короткий sha коммита Backend;
+#                иначе — имя переменной из infra/helm/frontend-tags.env
+#   db-password  имя переменной с паролем БД (в GitHub Actions — secrets.<имя>,
+#                локально — строка в infra/helm/secrets-k3s.env);
+#                `-` — у сервиса нет своей БД и пароль ему передавать нечего
+#
+# service             build  cpp-base  migrations  image-tag           db-password
+service-auth          yes    yes       yes         sha                 DB_PASSWORD_AUTH
+service-core          yes    yes       yes         sha                 DB_PASSWORD_CORE
+service-commission    yes    no        yes         sha                 DB_PASSWORD_COMMISSION
+bff                   no     no        no          BFF_IMAGE_TAG       -
+frontend              no     no        no          FRONTEND_IMAGE_TAG  -
