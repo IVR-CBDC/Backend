@@ -75,6 +75,11 @@ cors:
 
 networkPolicy:
   enabled: true
+  # ВНИМАНИЕ: под `bff` появляется в кластере только с values-bff.yaml
+  # (Task 2 плана 08). До этого политика закрывает сервис для всех —
+  # Task 1 нельзя выкатывать в k3s в одиночку.
+  # Источник ищется в том же namespace (networkPolicy.namespace: "" в
+  # values чарта) — bff обязан жить в `backend` вместе с сервисами.
   allowFrom:
     - app.kubernetes.io/name: bff
 

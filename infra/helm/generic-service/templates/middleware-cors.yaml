@@ -23,5 +23,7 @@ spec:
       - {{ . | trim | quote }}
       {{- end }}
     accessControlAllowCredentials: {{ .Values.cors.allowCredentials }}
+    # Без Vary: Origin разделяемый кэш отдаст ACAO одного origin'а другому.
+    addVaryHeader: true
     accessControlMaxAge: {{ .Values.cors.maxAge }}
 {{- end }}

@@ -14,8 +14,9 @@ spec:
   # Только Ingress. Egress намеренно не ограничивается: как только в
   # policyTypes появляется Egress, всё исходящее (включая DNS к
   # kube-dns:53) надо разрешать явно, и типовая ошибка — потерянный
-  # резолв, который выглядит как «сервис не поднялся». Ограничение
-  # исходящего трафика — отдельное решение, не эта задача.
+  # резолв, который выглядит как «сервис не поднялся». Пока Egress здесь
+  # нет, резолв имён этой политикой не затрагивается вообще: DNS — это
+  # исходящий трафик пода, ingress-правила к нему отношения не имеют.
   policyTypes:
     - Ingress
   ingress:
@@ -26,6 +27,9 @@ spec:
     # то есть podSelector, а не «весь namespace backend», как было раньше.
     - from:
         {{- range .Values.networkPolicy.allowFrom }}
+        {{- if not . }}
+        {{- fail "networkPolicy.allowFrom содержит пустой элемент: podSelector с пустым matchLabels открывает ВЕСЬ namespace. Укажите метки пода-источника или уберите элемент." }}
+        {{- end }}
         - podSelector:
             matchLabels:
               {{- toYaml . | nindent 14 }}
@@ -39,23 +43,13 @@ spec:
         - port: {{ $port }}
           protocol: TCP
     {{- end }}
-    {{- if .Values.networkPolicy.allowKubeSystem }}
-    # kube-system нужен для проб и служебного трафика control plane.
-    # Отдельным правилом, а не пунктом в списке выше: podSelector +
-    # namespaceSelector внутри одного элемента `from` — это И, а не ИЛИ.
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-      ports:
-        - port: {{ $port }}
-          protocol: TCP
-    {{- end }}
     {{- with .Values.networkPolicy.allowFromCIDRs }}
-    # Запасной клапан для CNI, где kubelet ходит в под с адреса узла и
-    # поэтому не попадает ни под один namespaceSelector (kubelet — это
-    # host network, а не под из kube-system). По умолчанию пусто: включать
-    # осознанно, указав подсеть узлов кластера.
+    # Пробы kubelet. Правила `namespaceSelector: kube-system` здесь
+    # намеренно НЕТ: kubelet ходит в под с host-сети узла и ни под какой
+    # namespaceSelector не попадает, а kube-system заодно пустил бы к
+    # сервису Traefik, CoreDNS и metrics-server — то есть правило не
+    # давало бы того, ради чего пишется, и нарушало бы инвариант «только
+    # BFF (и core → commission)».
     - from:
         {{- range . }}
         - ipBlock:
