@@ -16,3 +16,5 @@ infra/helm/generated/
 # smoke-цели сохраняют сюда cookie сессии (make test-login)
 .smoke-cookies.txt
 .k3s-smoke-cookies.txt
+.smoke-user.txt
+.k3s-smoke-user.txt

@@ -42,26 +42,42 @@ logs:
 #  * мутирующие запросы проходят CSRF-проверку `Origin` против
 #    ALLOWED_ORIGINS, поэтому заголовок `Origin` обязателен.
 #
+# Все цели ходят через infra/http-json.sh: HTTP-статус попадает в код
+# возврата. `curl -s ... | jq` этого не даёт — 401 и 409 проходили бы как
+# успех, а цель, которая не краснеет на поломке, хуже отсутствующей.
+#
 # Требуют поднятого профиля `bff` (обычный `make up` его не поднимает):
 #   docker compose --profile bff up -d --wait bff     # или make e2e-stand-up
-SMOKE_URL    ?= http://localhost
-SMOKE_ORIGIN ?= http://localhost
-COOKIE_JAR   ?= .smoke-cookies.txt
+SMOKE_URL       ?= http://localhost
+SMOKE_ORIGIN    ?= http://localhost
+SMOKE_PASSWORD  ?= hunter22
+COOKIE_JAR      ?= .smoke-cookies.txt
+SMOKE_USER_FILE ?= .smoke-user.txt
+HTTP_JSON       := bash infra/http-json.sh
 
+# Логин уникален на каждый прогон: с фиксированным `egor` второй запуск на
+# том же стенде получает 409 USER_EXISTS, и цель либо врёт зелёным, либо
+# краснеет на ровном месте. Уникальный логин делает успешный путь реально
+# проверяемым, а сам логин сохраняется для make test-login.
 test-register:
-	curl -s -c $(COOKIE_JAR) -X POST $(SMOKE_URL)/api/auth/register \
+	@login="egor-$$(date +%s)-$$$$"; inn=$$(shuf -i 1000000000-9999999999 -n1); \
+	$(HTTP_JSON) 200 -c $(COOKIE_JAR) -X POST $(SMOKE_URL)/api/auth/register \
 		-H 'Content-Type: application/json' -H 'Origin: $(SMOKE_ORIGIN)' \
-		-d '{"login":"egor","password":"hunter22","name":"Егор","company_name":"ООО Ромашка","inn":"7707083893"}' | jq
+		-d "{\"login\":\"$$login\",\"password\":\"$(SMOKE_PASSWORD)\",\"name\":\"Егор\",\"company_name\":\"ООО Ромашка $$inn\",\"inn\":\"$$inn\"}" && \
+	printf '%s\n' "$$login" > $(SMOKE_USER_FILE) && \
+	echo "логин $$login сохранён в $(SMOKE_USER_FILE) — его возьмёт make test-login"
 
 test-login:
-	curl -s -c $(COOKIE_JAR) -X POST $(SMOKE_URL)/api/auth/login \
+	@login=$$(cat $(SMOKE_USER_FILE) 2>/dev/null || true); \
+	test -n "$$login" || { echo "нет $(SMOKE_USER_FILE) — сначала make test-register" >&2; exit 1; }; \
+	$(HTTP_JSON) 200 -c $(COOKIE_JAR) -X POST $(SMOKE_URL)/api/auth/login \
 		-H 'Content-Type: application/json' -H 'Origin: $(SMOKE_ORIGIN)' \
-		-d '{"login":"egor","password":"hunter22"}' | jq
-	@echo "session-cookie сохранена в $(COOKIE_JAR) (см. make test-me, make test-token)"
+		-d "{\"login\":\"$$login\",\"password\":\"$(SMOKE_PASSWORD)\"}" && \
+	echo "session-cookie сохранена в $(COOKIE_JAR) (см. make test-me, make test-token)"
 
 test-me:
-	@test -s $(COOKIE_JAR) || { echo "нет $(COOKIE_JAR) — сначала make test-login"; exit 1; }
-	curl -s -b $(COOKIE_JAR) $(SMOKE_URL)/api/auth/me | jq
+	@test -s $(COOKIE_JAR) || { echo "нет $(COOKIE_JAR) — сначала make test-login" >&2; exit 1; }
+	@$(HTTP_JSON) 200 -b $(COOKIE_JAR) $(SMOKE_URL)/api/auth/me
 
 # Достаёт JWT из cookie jar. Нужен тем целям, которые ходят в сервисы мимо
 # BFF по внутренней сети (smoke-commission, smoke-deal) — там Bearer-токен
@@ -75,10 +91,13 @@ test-token:
 # наружу только `/api` и `/ws`), поэтому здоровье смотрим на host-портах,
 # которые публикует docker-compose.dev.yml. Через Traefik такой проверки
 # больше нет и быть не должно.
+# ВАЖНО: эти порты публикует ТОЛЬКО docker-compose.dev.yml. После обычного
+# `make up` их нет — поднимайте стенд с оверлеем (`make e2e-stand-up`,
+# `make test-api`) или добавьте `-f docker-compose.dev.yml` вручную.
 test-health:
-	@echo "service-auth:" && curl -sf http://127.0.0.1:18080/health | jq
-	@echo "service-core:" && curl -sf http://127.0.0.1:18081/health | jq
-	@echo "bff (/ready):" && curl -sf http://127.0.0.1:14000/ready | jq
+	@echo "service-auth:" && $(HTTP_JSON) 200 http://127.0.0.1:18080/health
+	@echo "service-core:" && $(HTTP_JSON) 200 http://127.0.0.1:18081/health
+	@echo "bff (/ready):" && $(HTTP_JSON) 200 http://127.0.0.1:14000/ready
 
 test-commission:
 	cd services/service-commission && uv run pytest -q -m "not db"
@@ -315,6 +334,7 @@ k3s-status:
 BASE_URL     := http://localhost
 K3S_ORIGIN   ?= $(BASE_URL)
 K3S_COOKIES  ?= .k3s-smoke-cookies.txt
+K3S_USER_FILE ?= .k3s-smoke-user.txt
 
 # /health каждого сервиса в кластере проверяют readiness/liveness-пробы
 # (`kubectl get pods -n backend`, цель k3s-status), а не внешний маршрут:
@@ -322,36 +342,43 @@ K3S_COOKIES  ?= .k3s-smoke-cookies.txt
 # что опубликовано — фронт отдаёт SPA, BFF отвечает на /api.
 k3s-test-health:
 	@echo "=== frontend (/) ===" && \
-	curl -s -o /dev/null -w "HTTP %{http_code}\n" $(BASE_URL)/
+	curl -sS --fail -o /dev/null -w "HTTP %{http_code}\n" $(BASE_URL)/
 	@echo "=== bff (/api/auth/me без сессии — ожидаем 401) ===" && \
-	curl -s -o /dev/null -w "HTTP %{http_code}\n" $(BASE_URL)/api/auth/me
+	$(HTTP_JSON) 401 $(BASE_URL)/api/auth/me
 	@echo "Здоровье самих сервисов: make k3s-status (пробы), наружу его нет."
 
+# Логин уникален на прогон — иначе второй запуск ловит 409 USER_EXISTS и
+# цель либо врёт зелёным, либо краснеет на ровном месте.
 k3s-test-auth:
-	@echo "=== Register ===" && \
-	curl -s -c $(K3S_COOKIES) -X POST $(BASE_URL)/api/auth/register \
+	@login="k3s-$$(date +%s)-$$$$"; inn=$$(shuf -i 1000000000-9999999999 -n1); \
+	echo "=== Register ($$login) ===" && \
+	$(HTTP_JSON) 200 -c $(K3S_COOKIES) -X POST $(BASE_URL)/api/auth/register \
 		-H 'Content-Type: application/json' -H 'Origin: $(K3S_ORIGIN)' \
-		-d '{"login":"testuser","password":"testpass123","name":"Test User","company_name":"ООО Тест","inn":"7710137066"}' | python3 -m json.tool && \
+		-d "{\"login\":\"$$login\",\"password\":\"$(SMOKE_PASSWORD)\",\"name\":\"Test User\",\"company_name\":\"OOO Test $$inn\",\"inn\":\"$$inn\"}" && \
+	printf '%s\n' "$$login" > $(K3S_USER_FILE) && \
 	echo "" && \
 	echo "=== Login (токен уезжает в HttpOnly-cookie, не в тело) ===" && \
-	curl -s -c $(K3S_COOKIES) -X POST $(BASE_URL)/api/auth/login \
+	$(HTTP_JSON) 200 -c $(K3S_COOKIES) -X POST $(BASE_URL)/api/auth/login \
 		-H 'Content-Type: application/json' -H 'Origin: $(K3S_ORIGIN)' \
-		-d '{"login":"testuser","password":"testpass123"}' | python3 -m json.tool && \
+		-d "{\"login\":\"$$login\",\"password\":\"$(SMOKE_PASSWORD)\"}" && \
 	echo "" && \
 	echo "=== Me (по cookie) ===" && \
-	curl -s -b $(K3S_COOKIES) $(BASE_URL)/api/auth/me | python3 -m json.tool
+	$(HTTP_JSON) 200 -b $(K3S_COOKIES) $(BASE_URL)/api/auth/me
 
+# Тело запроса — camelCase: это контракт BFF (createDealBodySchema в
+# bff/src/routes/deals.ts), а не service-core, который принимает snake_case.
+# Ответ на создание — 201, не 200.
 k3s-test-core:
-	@echo "=== Login for session ===" && \
-	curl -s -c $(K3S_COOKIES) -o /dev/null -X POST $(BASE_URL)/api/auth/login \
+	@login=$$(cat $(K3S_USER_FILE) 2>/dev/null || true); \
+	test -n "$$login" || { echo "нет $(K3S_USER_FILE) — сначала make k3s-test-auth" >&2; exit 1; }; \
+	echo "=== Login for session ($$login) ===" && \
+	$(HTTP_JSON) 200 -c $(K3S_COOKIES) -X POST $(BASE_URL)/api/auth/login \
 		-H 'Content-Type: application/json' -H 'Origin: $(K3S_ORIGIN)' \
-		-d '{"login":"testuser","password":"testpass123"}' && \
-	echo "" && \
+		-d "{\"login\":\"$$login\",\"password\":\"$(SMOKE_PASSWORD)\"}" >/dev/null && \
 	echo "=== Create deal (через BFF: /api/deals, не /api/core/deals) ===" && \
-	curl -s -b $(K3S_COOKIES) -X POST $(BASE_URL)/api/deals \
+	$(HTTP_JSON) 201 -b $(K3S_COOKIES) -X POST $(BASE_URL)/api/deals \
 		-H 'Content-Type: application/json' -H 'Origin: $(K3S_ORIGIN)' \
-		-d '{"counterparty_country":"CN","counterparty_name":"Trading Partner Co","operation_type":"import","amount":100000,"currency":"CNY"}' \
-		| python3 -m json.tool && \
+		-d '{"counterpartyCountry":"CN","counterpartyName":"Trading Partner Co","operationType":"import","amount":100000,"currency":"CNY"}' && \
 	echo "" && \
 	echo "=== List deals ===" && \
-	curl -s -b $(K3S_COOKIES) $(BASE_URL)/api/deals | python3 -m json.tool
+	$(HTTP_JSON) 200 -b $(K3S_COOKIES) $(BASE_URL)/api/deals

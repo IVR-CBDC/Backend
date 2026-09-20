@@ -47,10 +47,9 @@ Traefik больше нет, спека §3). Нужен поднятый про
 ```bash
 docker compose --profile bff up -d --wait bff   # или make e2e-stand-up
 
-make test-register
-make test-login    # токен уезжает в HttpOnly-cookie, не в тело ответа
-make test-me       # ходит по сохранённой cookie (.smoke-cookies.txt)
-make test-health   # /health сервисов — через host-порты dev-оверлея
+make test-register  # логин уникален на каждый прогон, сохраняется в .smoke-user.txt
+make test-login     # токен уезжает в HttpOnly-cookie, не в тело ответа
+make test-me        # ходит по сохранённой cookie (.smoke-cookies.txt)
 
 # Целям, которые ходят в сервисы мимо BFF по внутренней сети, Bearer всё
 # ещё нужен — токен достаётся из той же cookie:
@@ -59,6 +58,20 @@ make smoke-commission
 make smoke-deal       # сквозная сделка: создать → сценарий → документы → эмулятор → completed
 make test-api         # pytest против поднятого стенда (EMULATOR_MANUAL=true)
 ```
+
+`make test-health` (`/health` сервисов и `/ready` BFF) стоит особняком: он
+бьёт в host-порты **18080, 18081 и 14000, которые публикует только
+`docker-compose.dev.yml`**. После обычного `make up` их нет и цель честно
+упадёт с «Failed to connect». Поднимайте стенд с оверлеем:
+
+```bash
+make e2e-stand-up   # или docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait
+make test-health
+```
+
+Все smoke-цели возвращают ненулевой код на неожиданном HTTP-статусе
+(`infra/http-json.sh`) — зелёный `make test-me` действительно означает 200,
+а не «401 проскочил через `| jq`».
 
 `make up` наружу отдаёт только traefik (порт 80) — так локальная топология
 совпадает с прод. С плана 08 дашборд Traefik **выключен по умолчанию**
