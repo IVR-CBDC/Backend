@@ -34,19 +34,43 @@ migrations:
     user: ""
     password: ""
 
+# Наружу (IngressRoute) публикуются только bff и frontend — спека §3.
+# Дефолт выключен намеренно: сервис торчит наружу, только если его values
+# это сказали явно.
 ingress:
   enabled: false
   match: ""
 
 cors:
   enabled: false
-  allowOrigins: "*"
+  # Никакой звёздочки: сессия живёт в HttpOnly-cookie (спека §3.1), а
+  # `*` вместе с credentials — плохая пара. Values сервиса, который
+  # включает cors, обязаны задать реальный список источников.
+  allowOrigins: ""
   allowMethods: "GET,POST,PUT,DELETE,OPTIONS"
   allowHeaders: "Authorization,Content-Type"
+  allowCredentials: true
   maxAge: 600
 
 networkPolicy:
   enabled: false
+  # Список подов-источников, которым разрешён вход. Элемент — matchLabels
+  # пода-источника; чарт метит поды `app.kubernetes.io/name: <release>`,
+  # поэтому источник записывается так:
+  #   allowFrom:
+  #     - app.kubernetes.io/name: bff
+  # Пустой список = входа нет ни у кого, кроме kube-system ниже
+  # (fail closed — это дефолт для сервиса, который не объявил вызывающих).
+  allowFrom: []
+  # Namespace, в котором ищутся поды из allowFrom. Пусто — тот же
+  # namespace, что и у самого сервиса (podSelector без namespaceSelector).
+  namespace: ""
+  # Пропускать kube-system (пробы, служебный трафик control plane).
+  allowKubeSystem: true
+  # Подсети, которым разрешён вход помимо allowFrom — например подсеть
+  # узлов, если kubelet ходит в под с адреса узла (тогда он не попадает
+  # ни под один namespaceSelector). По умолчанию пусто.
+  allowFromCIDRs: []
 
 healthcheck:
   path: /health

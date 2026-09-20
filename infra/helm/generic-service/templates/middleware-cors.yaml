@@ -8,7 +8,12 @@ metadata:
 spec:
   headers:
     accessControlAllowOriginList:
-      - {{ .Values.cors.allowOrigins | quote }}
+      {{- if not .Values.cors.allowOrigins }}
+      {{- fail "cors.enabled=true требует непустой cors.allowOrigins: звёздочка и пустой список запрещены (спека §3.1, сессия в cookie)" }}
+      {{- end }}
+      {{- range (splitList "," .Values.cors.allowOrigins) }}
+      - {{ . | trim | quote }}
+      {{- end }}
     accessControlAllowMethods:
       {{- range (splitList "," .Values.cors.allowMethods) }}
       - {{ . | trim | quote }}
@@ -17,5 +22,6 @@ spec:
       {{- range (splitList "," .Values.cors.allowHeaders) }}
       - {{ . | trim | quote }}
       {{- end }}
+    accessControlAllowCredentials: {{ .Values.cors.allowCredentials }}
     accessControlMaxAge: {{ .Values.cors.maxAge }}
 {{- end }}

@@ -62,15 +62,21 @@ migrations:
     user: core
     password: core
 
+# План 08 / спека §3: наружу service-core не публикуется — к нему ходит
+# только BFF внутри кластера. Заодно это закрывает внутреннюю ручку
+# эмулятора POST /internal/emulator/tick (спека §4.3): в k3s она не
+# публикуется вообще, а NetworkPolicy ниже не пускает к ней никого,
+# кроме bff.
 ingress:
-  enabled: true
-  match: "PathPrefix(`/api/core`)"
+  enabled: false
 
 cors:
-  enabled: true
+  enabled: false
 
 networkPolicy:
   enabled: true
+  allowFrom:
+    - app.kubernetes.io/name: bff
 
 healthcheck:
   path: /health

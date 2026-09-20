@@ -1,4 +1,6 @@
 {{- if .Values.networkPolicy.enabled }}
+{{- $port := .Values.service.port -}}
+{{- $ns := .Values.networkPolicy.namespace -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -9,17 +11,58 @@ spec:
   podSelector:
     matchLabels:
       {{- include "generic-service.selectorLabels" . | nindent 6 }}
+  # Только Ingress. Egress намеренно не ограничивается: как только в
+  # policyTypes появляется Egress, всё исходящее (включая DNS к
+  # kube-dns:53) надо разрешать явно, и типовая ошибка — потерянный
+  # резолв, который выглядит как «сервис не поднялся». Ограничение
+  # исходящего трафика — отдельное решение, не эта задача.
   policyTypes:
     - Ingress
   ingress:
+    {{- if .Values.networkPolicy.allowFrom }}
+    # Кто имеет право ходить в этот сервис (спека §3): к auth/core — только
+    # bff, к commission — bff и core. Список объявляет каждый сервис сам в
+    # своих values; элемент — набор меток пода-источника (matchLabels),
+    # то есть podSelector, а не «весь namespace backend», как было раньше.
     - from:
-        - namespaceSelector:
+        {{- range .Values.networkPolicy.allowFrom }}
+        - podSelector:
             matchLabels:
-              kubernetes.io/metadata.name: backend
+              {{- toYaml . | nindent 14 }}
+          {{- if $ns }}
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+          {{- end }}
+        {{- end }}
+      ports:
+        - port: {{ $port }}
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.networkPolicy.allowKubeSystem }}
+    # kube-system нужен для проб и служебного трафика control plane.
+    # Отдельным правилом, а не пунктом в списке выше: podSelector +
+    # namespaceSelector внутри одного элемента `from` — это И, а не ИЛИ.
+    - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
       ports:
-        - port: {{ .Values.service.port }}
+        - port: {{ $port }}
           protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.allowFromCIDRs }}
+    # Запасной клапан для CNI, где kubelet ходит в под с адреса узла и
+    # поэтому не попадает ни под один namespaceSelector (kubelet — это
+    # host network, а не под из kube-system). По умолчанию пусто: включать
+    # осознанно, указав подсеть узлов кластера.
+    - from:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - port: {{ $port }}
+          protocol: TCP
+    {{- end }}
 {{- end }}

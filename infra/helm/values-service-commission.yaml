@@ -32,6 +32,7 @@ migrations:
     user: commission
     password: commission
 
+# План 08 / спека §3: наружу не публикуется.
 ingress:
   enabled: false
 
@@ -40,6 +41,11 @@ cors:
 
 networkPolicy:
   enabled: true
+  allowFrom:
+    # Единственное разрешённое межсервисное обращение по спеке §3:
+    # service-core → service-commission при подтверждении сценария.
+    - app.kubernetes.io/name: bff
+    - app.kubernetes.io/name: service-core
 
 healthcheck:
   path: /health

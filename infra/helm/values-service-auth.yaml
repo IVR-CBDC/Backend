@@ -51,15 +51,19 @@ migrations:
     user: auth
     password: auth
 
+# План 08 / спека §3: наружу service-auth не публикуется — к нему ходит
+# только BFF внутри кластера. IngressRoute и CORS-middleware здесь не
+# нужны совсем (CORS — забота внешнего периметра, а он теперь у bff).
 ingress:
-  enabled: true
-  match: "PathPrefix(`/api/auth`)"
+  enabled: false
 
 cors:
-  enabled: true
+  enabled: false
 
 networkPolicy:
   enabled: true
+  allowFrom:
+    - app.kubernetes.io/name: bff
 
 healthcheck:
   path: /health
