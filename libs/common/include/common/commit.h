@@ -210,13 +210,23 @@ struct [[nodiscard]] CommitAwaiter {
 // повиснуть навсегда в ожидании колбэка, которого после отката не будет)
 // становится невыразимо.
 //
+// Параметр — именно rvalue-ссылка, а не `shared_ptr` по значению: приём по
+// значению принял бы и копию (`rollbackAndDiscard(tx)`), оставив у
+// вызывающего живой `tx`, — то есть герметичность, ради которой всё и
+// затевалось, обходилась бы молча и без единого предупреждения. С `&&`
+// вызов обязан быть `rollbackAndDiscard(std::move(tx))`, и компилятор
+// отвергнет любой другой.
+//
 // Отпускать ссылку сразу же безопасно: `TransactionImpl::rollback()` кладёт
 // `shared_from_this()` в очередь цикла и в колбэки самого `rollback`, так
 // что транзакция доживает до конца отката и без нашей ссылки, а деструктор
 // не успеет увидеть `isCommitedOrRolledback_ == false` и послать COMMIT.
-inline void rollbackAndDiscard(std::shared_ptr<drogon::orm::Transaction> trans) {
-  if (!trans) return;
-  trans->rollback();
+inline void rollbackAndDiscard(std::shared_ptr<drogon::orm::Transaction> &&trans) {
+  // Забираем в локальную переменную: сама по себе rvalue-ссылка ничего не
+  // перемещает, и без этого `tx` у вызывающего остался бы живым.
+  const std::shared_ptr<drogon::orm::Transaction> taken = std::move(trans);
+  if (!taken) return;
+  taken->rollback();
 }
 
 }  // namespace common
