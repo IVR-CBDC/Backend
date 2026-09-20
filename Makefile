@@ -83,9 +83,14 @@ test-me:
 # BFF по внутренней сети (smoke-commission, smoke-deal) — там Bearer-токен
 # по-прежнему единственный способ авторизоваться, BFF в этой цепочке нет.
 # Netscape-формат cookie jar: поля 6 и 7 — имя и значение.
+# Проверяем НЕПУСТОЙ ТОКЕН, а не непустой файл: curl пишет в jar заголовок
+# Netscape, поэтому `test -s` проходит и тогда, когда строки `session` там нет
+# (логин не прошёл, cookie не поставлена) — цель напечатала бы пустоту и
+# отрапортовала успех.
 test-token:
-	@test -s $(COOKIE_JAR) || { echo "нет $(COOKIE_JAR) — сначала make test-login" >&2; exit 1; }
-	@awk '$$6=="session"{print $$7}' $(COOKIE_JAR)
+	@token=$$(awk '$$6=="session"{print $$7}' $(COOKIE_JAR) 2>/dev/null); \
+	test -n "$$token" || { echo "в $(COOKIE_JAR) нет cookie session — сначала make test-login" >&2; exit 1; }; \
+	printf '%s\n' "$$token"
 
 # /health сервисов наружу не публикуется и BFF его не проксирует (спека §3:
 # наружу только `/api` и `/ws`), поэтому здоровье смотрим на host-портах,

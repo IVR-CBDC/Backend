@@ -42,6 +42,14 @@ jobs:
       - name: shellcheck infra/*.sh
         run: shellcheck infra/*.sh
 
+      # traefik.dashboard.yml — копия traefik.yml с другим блоком api:
+      # (оверлей docker-compose.dashboard.yml подменяет им весь статический
+      # конфиг). Связать их средствами Traefik нельзя — при --configFile он
+      # игнорирует переменные окружения, include'ов у статического конфига
+      # нет, — поэтому расхождение ловится здесь, а не глазами.
+      - name: traefik configs in sync
+        run: bash infra/check-traefik-configs.sh
+
   # ============================================================
   # helm (F4, final review): чарт до сих пор не проверялся ни одной джобой,
   # а infra/gen-migration-values.sh течёт в него через values — поломка
