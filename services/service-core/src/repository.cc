@@ -1,5 +1,7 @@
 #include "repository.h"
 
+#include "common/commit.h"
+
 #include <algorithm>
 #include <cmath>
 #include <sstream>
@@ -238,7 +240,18 @@ Task<DealDetail> DealRepository::create(std::string company_id, std::string coun
   co_await trans->execSqlCoro("INSERT INTO outbox (company_id, topic, payload) VALUES ($1::uuid, $2, $3::jsonb)",
                               company_id, std::string("deal-events"), payload);
 
-  co_return co_await loadDealDetail(trans, deal_id, company_id);
+  // Читаем сделку ещё внутри транзакции (иначе её не видно), а отдаём
+  // наружу — только после подтверждённого COMMIT: иначе 201 со сделкой
+  // обгоняет COMMIT, и следующий GET по другому соединению пула под READ
+  // COMMITTED отвечает 404 на только что созданную сделку.
+  auto detail = co_await loadDealDetail(trans, deal_id, company_id);
+  if (!co_await common::awaitCommit(std::move(trans))) {
+    // У create() нет канала для статуса — она возвращает саму сделку.
+    // Бросок ловит createDeal() (catch std::exception) и отвечает 500.
+    LOG_ERROR << "create: транзакция сделки " << deal_id << " не закоммитилась";
+    throw common::CommitFailed{};
+  }
+  co_return detail;
 }
 
 Task<ApplyResult> DealRepository::apply(std::string deal_id, std::string company_id, int expected_version,
@@ -370,6 +383,14 @@ Task<ApplyResult> DealRepository::apply(std::string deal_id, std::string company
                               company_id, std::string("deal-events"), payload);
 
   auto detail = co_await loadDealDetail(trans, deal_id, company_id);
+  // Тот же порядок, что и в create(): сначала подтверждённый COMMIT, только
+  // потом отдаём сделку наружу. Ранние выходы выше (not_found,
+  // version_conflict) сюда не заходят — они ничего не меняли, и их
+  // поведение остаётся прежним.
+  if (!co_await common::awaitCommit(std::move(trans))) {
+    LOG_ERROR << "apply: транзакция сделки " << deal_id << " не закоммитилась";
+    co_return ApplyResult{ApplyResult::Status::commit_failed, std::nullopt};
+  }
   co_return ApplyResult{ApplyResult::Status::ok, std::move(detail)};
 }
 

@@ -86,6 +86,12 @@ Task<> CoreController::submitDocument(HttpRequestPtr req, std::function<void(con
       cb(jsonError(k409Conflict, "VERSION_CONFLICT", "Сделка изменилась, обновите страницу"));
       co_return;
     }
+    // COMMIT не прошёл — изменений в базе нет, и отвечать 200 с телом
+    // «сохранили» нельзя: это была бы тихая потеря данных.
+    if (result.status == ApplyResult::Status::commit_failed) {
+      cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
+      co_return;
+    }
 
     Json::Value out;
     out["deal"] = dealJson(*result.deal);

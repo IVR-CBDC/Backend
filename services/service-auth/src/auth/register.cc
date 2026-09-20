@@ -1,4 +1,5 @@
 #include "auth_controller.h"
+#include "common/commit.h"
 #include "helpers.h"
 #include "jwt_issuer.h"
 #include "password.h"
@@ -68,6 +69,22 @@ AuthController::registerUser(const HttpRequestPtr req,
         user_id, input.login, hashPassword(input.password), input.name, company_id);
 
     const auto token = JwtIssuer::instance().issue(user_id, company_id);
+
+    // Ответ уходит ТОЛЬКО после подтверждённого COMMIT. Без этого клиент
+    // получал бы user_id и токен, пока COMMIT ещё в полёте (публичного
+    // commit() у Drogon нет, он в деструкторе транзакции), и следующий
+    // запрос — логин теми же кредами или /me с этим токеном — брал бы из
+    // пула другое соединение, под READ COMMITTED не видел бы ни
+    // пользователя, ни компанию и отвечал 401/404. См. common/commit.h.
+    //
+    // Ветка USER_EXISTS выше сюда не заходит намеренно: после rollback()
+    // Drogon commit-колбэк не вызывает вообще, и ожидание там повисло бы.
+    if (!co_await common::awaitCommit(std::move(tx))) {
+      LOG_ERROR << "register: транзакция не закоммитилась, пользователь " << input.login
+                << " не создан";
+      cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
+      co_return;
+    }
 
     Json::Value out;
     out["user_id"] = user_id;
