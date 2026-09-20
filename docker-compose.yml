@@ -44,8 +44,10 @@ services:
       # (сессия в cookie, спека §3.1); дефолт — адреса локального стенда.
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1,http://127.0.0.1:8090,http://localhost:5173}
     ports:
+      # Только web. Служебный entryPoint :8080 (ping, дашборд) наружу не
+      # публикуется: ingress-контроллер сам не должен торчать наружу
+      # (спека §3). Дашборд — через docker-compose.dashboard.yml.
       - "80:80"
-      - "8081:8080"
     volumes:
       - ./infra/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./infra/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
@@ -266,7 +268,11 @@ services:
   # задокументированное поведение docker compose, проверено локально
   # (см. отчёт). Для локальной сборки из ../alfa-cbdc-hub по-прежнему
   # нужен docker-compose.override.yml.example — он не изменился.
-  # Traefik сюда пока не смотрит — внешняя маршрутизация BFF это план 08.
+  #
+  # План 08: Traefik теперь маршрутизирует сюда `/api` и `/ws` (роутер `bff`,
+  # priority 100 — см. infra/traefik/dynamic.yml). Профиль остаётся: без
+  # `--profile bff` сервис не поднимается, и это нормально — Traefik от
+  # недоступного upstream не падает, запрос просто получает 502.
   # ============================================================
   bff:
     image: ${BFF_IMAGE:-ghcr.io/ivr-cbdc/frontend/bff:latest}
@@ -282,7 +288,11 @@ services:
       # переменную окружения — этот дефолт остаётся рабочим для локального
       # стенда без Traefik.
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost}
-      COOKIE_SECURE: "false"
+      # План 08, Global Constraints: COOKIE_SECURE — параметр, а не литерал.
+      # Дефолт `false`, потому что локальный стенд ходит по http, и cookie с
+      # Secure до браузера просто не доедет. За TLS поднимают стенд с
+      # COOKIE_SECURE=true, не правя этот файл.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     depends_on:
       service-auth: { condition: service_healthy }
       service-core: { condition: service_healthy }
@@ -309,8 +319,11 @@ services:
   # публиковал, поэтому сервис под своим профилем — обычный `make up` его
   # не трогает и не пытается тянуть несуществующий образ. Для локальной
   # сборки из ../alfa-cbdc-hub — свой блок в
-  # docker-compose.override.yml.example (frontend/Dockerfile). Traefik
-  # сюда пока не смотрит — внешняя маршрутизация это план 08.
+  # docker-compose.override.yml.example (frontend/Dockerfile).
+  #
+  # План 08: Traefik отдаёт сюда всё остальное — роутер `frontend`,
+  # `PathPrefix(/)` с priority 1 (явно ниже bff, иначе `/` перехватил бы
+  # `/api`). Upstream — порт 8080: nginxinc/nginx-unprivileged.
   # ============================================================
   frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/ivr-cbdc/frontend/spa:latest}
