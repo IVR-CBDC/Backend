@@ -42,7 +42,10 @@ AuthController::registerUser(const HttpRequestPtr req,
     const auto exists =
         co_await tx->execSqlCoro("SELECT 1 FROM users WHERE login = $1", input.login);
     if (exists.size() > 0) {
-      tx->rollback();
+      // Откат забирает транзакцию себе: после этого живого `tx` нет, и
+      // передать его в awaitCommit (где ожидание повисло бы навсегда —
+      // после rollback Drogon commit-колбэк не зовёт) уже нельзя.
+      common::rollbackAndDiscard(std::move(tx));
       cb(jsonError(k409Conflict, "USER_EXISTS",
                    "Пользователь с таким логином уже существует"));
       co_return;
@@ -77,8 +80,8 @@ AuthController::registerUser(const HttpRequestPtr req,
     // пула другое соединение, под READ COMMITTED не видел бы ни
     // пользователя, ни компанию и отвечал 401/404. См. common/commit.h.
     //
-    // Ветка USER_EXISTS выше сюда не заходит намеренно: после rollback()
-    // Drogon commit-колбэк не вызывает вообще, и ожидание там повисло бы.
+    // Ветка USER_EXISTS выше сюда не заходит: rollbackAndDiscard() уже
+    // забрала транзакцию, и ждать после отката физически нечего.
     if (!co_await common::awaitCommit(std::move(tx))) {
       LOG_ERROR << "register: транзакция не закоммитилась, пользователь " << input.login
                 << " не создан";
