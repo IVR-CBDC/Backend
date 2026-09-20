@@ -48,8 +48,14 @@ secrets:
   # Выводимое: шаблон написан здесь, в репозитории, и раскрывается при
   # рендере. Пароль в него подставляется, но сам шаблоном не считается —
   # пароль с `{{` внутри ни рендер не уронит, ни подставится молча.
+  #
+  # requireUrlUserinfoSafe: пароль тут попадает в userinfo URL, и символ
+  # вроде `@`, `/`, `#`, `?` или `:` сместил бы границы разбора строки
+  # подключения — asyncpg увидел бы другой хост или другого пользователя,
+  # а Secret при этом выглядел бы совершенно правильным. Проверка, а не
+  # кодирование: см. helper, там причина.
   derived:
-    pgDsn: "postgresql+asyncpg://commission:{{ required `secrets.data.dbPassword обязателен для service-commission: из него собирается pgDsn` .Values.secrets.data.dbPassword }}@pg-commission-postgresql.data.svc.cluster.local:5432/commission"
+    pgDsn: "postgresql+asyncpg://commission:{{ required `secrets.data.dbPassword обязателен для service-commission: из него собирается pgDsn` .Values.secrets.data.dbPassword | include `generic-service.requireUrlUserinfoSafe` }}@pg-commission-postgresql.data.svc.cluster.local:5432/commission"
 
 migrations:
   enabled: true
