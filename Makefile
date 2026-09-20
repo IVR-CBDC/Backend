@@ -17,10 +17,12 @@ up: keys
 	docker compose up --build -d
 	@echo ""
 	@echo "Up:"
-	@echo "  http://localhost/api/auth/...        -> service-auth"
-	@echo "  http://localhost/api/core/...        -> service-core"
-	@echo "  service-commission                   -> только внутри сети (make smoke-commission)"
+	@echo "  http://localhost/                    -> frontend (профиль frontend, см. make e2e-stand-up)"
+	@echo "  http://localhost/api, /ws            -> bff (профиль bff)"
+	@echo "  service-auth/core/commission         -> только внутри сети (план 08: наружу их нет)"
 	@echo "  http://localhost:8081                -> traefik dashboard"
+	@echo ""
+	@echo "  bff/frontend под профилями: без них Traefik жив, /api и / отдадут 502."
 
 down:
 	docker compose down -v

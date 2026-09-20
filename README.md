@@ -6,11 +6,14 @@
 
 ```
                             ┌──────────────────────────────┐
-[Frontend] ──HTTP──>        │  Traefik (Ingress)           │
-                            │  один URL, разные пути       │
-                            └──┬─────────┬─────────┬───────┘
-              /api/auth/*  ────┘         │         └──── (внутр.)
-                                /api/core/*
+[Browser]  ──HTTP──>        │  Traefik (Ingress)           │
+                            │  наружу только frontend и bff │
+                            └──┬───────────────────┬────────┘
+                    /api, /ws ─┘                   └─ /  ──> frontend (nginx, SPA)
+                       │
+                  ┌────▼─────┐
+                  │   bff    │  Node/Express — единственная дверь для SPA
+                  └────┬─────┘
                   │                      │                      │
         ┌─────────▼────────┐  ┌──────────▼──────────┐  ┌────────▼──────────┐
         │  service-auth    │  │  service-core       │  │  service-commission │
@@ -84,9 +87,12 @@ Explicit лучше implicit здесь: все `-f`-цепочки перечи
 
 Стенд умеет поднимать сервис `bff` — единственную дверь для SPA из
 Frontend-репозитория (`IVR-CBDC/Frontend`, локально `../alfa-cbdc-hub`).
-Traefik пока про него не знает — внешняя маршрутизация появится в плане 08,
-поэтому в `docker-compose.yml` `bff` виден только другим сервисам внутри
-`backend-net`.
+С плана 08 Traefik маршрутизирует на него `/api` и `/ws` (роутер `bff`,
+`priority: 100`), а прямых маршрутов `/api/auth` и `/api/core` к сервисам
+больше нет — наружу торчат только `frontend` и `bff` (спека §3).
+`bff` по-прежнему под профилем `bff`, поэтому обычный `make up` его не
+поднимает; Traefik от этого не падает — недоступный upstream даёт 502 на
+запрос, а не ошибку старта.
 
 По умолчанию `docker-compose.yml` ссылается на
 `${BFF_IMAGE:-ghcr.io/ivr-cbdc/frontend/bff:latest}` — это правильный
@@ -143,8 +149,10 @@ Frontend-репозиторий будет запушен под `IVR-CBDC/Front
 Стенд умеет поднимать сервис `frontend` — nginx со статикой SPA из
 Frontend-репозитория (`IVR-CBDC/Frontend`, локально `../alfa-cbdc-hub`),
 проксирующий `/api` и `/ws` на `bff`. Тот же паттерн, что у `bff` выше:
-Traefik про `frontend` пока не знает (план 08), профиль и образ ещё не
-опубликован.
+образ ещё не опубликован, сервис под своим профилем. С плана 08 Traefik
+отдаёт ему `/` (роутер `frontend`, `priority: 1` — явно ниже `bff`, чтобы
+`/api` не перехватывался). Образ `nginxinc/nginx-unprivileged` слушает
+8080, поэтому upstream в `infra/traefik/dynamic.yml` — `http://frontend:8080`.
 
 По умолчанию `docker-compose.yml` ссылается на
 `${FRONTEND_IMAGE:-ghcr.io/ivr-cbdc/frontend/spa:latest}` — этот образ CI
