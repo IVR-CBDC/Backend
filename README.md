@@ -495,6 +495,16 @@ apt-пакетов в `cpp-base.Dockerfile` — изменения кода `ser
   `kube-system`), чьи метки без живого кластера неизвестны. Неверный
   `podSelector` здесь молча закрыл бы единственный вход в систему. Правило
   дописывается при первом выкате, по фактическим меткам пода Traefik.
+  **Следствие, которое надо называть прямо:** пока политики нет, к
+  `bff:4000` может ходить любой под кластера — в обход Traefik и его
+  middleware целиком. Внутренний периметр (auth/core/commission пускают
+  только bff) от этого не страдает, но сам bff внутри кластера сейчас не
+  защищён ничем. Это незакрытый пункт, а не «периметр держится на Traefik».
+- **Порядок выката обязателен: сначала `bff`, потом `frontend`.** nginx
+  резолвит имя `bff` при разборе конфига, на старте, а не при первом
+  запросе. Если пода bff ещё нет, фронт падает с `[emerg] host not found in
+  upstream "bff"` и уходит в CrashLoopBackOff — выглядит как сломанный образ
+  SPA, хотя сломан порядок. Воспроизведено локально.
 
 ### Секреты в k3s — и почему в compose пароли открыты (план 08)
 
@@ -510,12 +520,29 @@ apt-пакетов в `cpp-base.Dockerfile` — изменения кода `ser
     -f infra/helm/generated/migrations-service-auth.yaml \
     -n backend --set secrets.data.dbPassword='<пароль>'
 
-  # service-commission берёт из Secret не пароль, а весь DSN: пароль там —
-  # часть строки подключения, и вынести отдельно его нельзя, не собирая DSN
-  # внутри сервиса.
-  --set secrets.data.dbPassword='<пароль>' \
-  --set secrets.data.pgDsn='postgresql+asyncpg://commission:<пароль>@pg-commission-postgresql.data.svc.cluster.local:5432/commission'
+  # service-commission берёт из Secret не только пароль, но и весь DSN
+  # (пароль там — часть строки подключения). Передаётся всё равно ОДИН
+  # --set: DSN собирается из dbPassword шаблоном в values. Два независимых
+  # --set с одним паролем внутри разъехались бы при ротации молча.
   ```
+
+  Ссылки на ключи Secret'а сверяются с тем, что в нём есть: опечатка в
+  `migrations.db.passwordSecretKey` или в `envSecret[].key` роняет рендер и
+  называет имеющиеся ключи. Без этой сверки ошибка дожила бы до кластера и
+  выглядела бы как `CreateContainerConfigError`, то есть «под не стартует»,
+  а не «забыли `--set`».
+
+  Под перезапускается при смене секрета: в аннотациях пода
+  `checksum/secrets` и `checksum/config`. Для `config.json` это не
+  оптимизация, а единственный способ — он монтируется через `subPath`, а
+  такие тома kubelet не обновляет вообще, и без чексуммы под остался бы со
+  старым паролем навсегда.
+
+  Параметры, которые переопределяет CD (`ALLOWED_ORIGINS`, `COOKIE_SECURE`),
+  живут в `envMap` — map, а не список: `--set env[5].value=...` адресует
+  переменную по индексу массива, и вставка любой строки выше по списку молча
+  переназначила бы другую. Запятые экранируются, их режет сам `--set`:
+  `--set-string envMap.ALLOWED_ORIGINS='https://a\,https://b'`.
 
   Пароль подтягивают и сервис, и init-контейнер миграций
   (`migrations.db.passwordSecretKey`) — из одного и того же Secret'а, иначе
@@ -543,12 +570,18 @@ apt-пакетов в `cpp-base.Dockerfile` — изменения кода `ser
   вовсе, а commission объявляет нечисловой `USER app` — доказать, что
   процесс не root, kubelet не может ни в том, ни в другом случае. Рендер
   чарта падает, если `runAsNonRoot: true` стоит без `runAsUser`.
-- `readOnlyRootFilesystem: true` у четырёх сервисов. Исключение одно —
-  `frontend`: nginx при каждом старте пишет в `/var/cache/nginx`,
-  `/tmp/nginx.pid` и правит `/etc/nginx/conf.d` скриптами
-  `docker-entrypoint.d`. Выключено **точечно, в `values-frontend.yaml`**, а
-  не в чарте: остальные четыре защиту сохраняют. Лечится emptyDir-томами на
-  эти каталоги, но подобрать их набор можно только на живом кластере.
+- `readOnlyRootFilesystem: true` у **всех пяти**, исключений нет. Двум
+  сервисам для этого нужен записываемый каталог, и оба — `emptyDir`, без
+  состояния:
+  - `frontend` → `/tmp`: nginx-unprivileged держит там pid и все
+    `*_temp`-пути, без него падает на `mkdir() "/tmp/proxy_temp" failed
+    (30: Read-only file system)`. `/var/cache/nginx` монтировать не надо —
+    проверено запуском `docker run --read-only --user 101:101 --tmpfs /tmp`
+    (HTTP 200).
+  - `service-auth`, `service-core` → `/app/uploads`: Drogon при старте
+    создаёт `./uploads/tmp/00 … FF` относительно cwd. Без тома сервис
+    работает (`/health` 200), но печатает 256 строк `ERROR Error 30 creating
+    path` на каждый рестарт — лог с 256 ERROR в норме перестаёт быть логом.
 - Образ SPA — `nginxinc/nginx-unprivileged` и слушает **8080**, а не 80:
   привязка к порту ниже 1024 требует root, под `runAsNonRoot` стоковый
   `nginx:alpine` не стартует вообще.
