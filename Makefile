@@ -2,7 +2,7 @@
        e2e-stand-up e2e-stand-down \
        new-cpp new-python k3s-install k3s-import-images k3s-setup \
        k3s-build k3s-deploy k3s-deploy-data up-k3s down-k3s k3s-status \
-       k3s-secrets k3s-secrets-check k3s-preflight \
+       k3s-secrets k3s-secrets-check k3s-preflight k3s-preflight-data \
        k3s-test-health k3s-test-auth k3s-test-core
 
 keys:
@@ -381,14 +381,12 @@ k3s-build: $(addprefix k3s-build-,$(K3S_BUILD_SERVICES))
 # соответствует тому, чем PVC инициализировали) и что мы собираемся
 # поставить. После upgrade первая сторона теряется.
 #
-# k3s-preflight — предпосылка, а не соседний пункт в списке у k3s-deploy:
-# слой данных это ПЕРВОЕ, что меняется в кластере, и проверки обязаны
-# пройти до него. Перечисление `k3s-deploy: k3s-deploy-data k3s-preflight`
-# этого не давало: предпосылки выполняются слева направо только без `-j`, и
-# при заглушке `latest` в frontend-tags.env цель успевала проапгрейдить три
-# Postgres и redis, а потом печатала «выкат не начинался». Здесь порядок —
-# настоящая зависимость, от режима make не зависящая.
-k3s-deploy-data: k3s-secrets-check k3s-preflight
+# Предпосылка — k3s-preflight-data, то есть проверки БЕЗ тегов: сама по
+# себе эта цель поднимает слой данных на чистом стенде, когда образов bff и
+# frontend ещё не существует. Полный preflight (с тегами) висит на
+# k3s-deploy — см. там, почему он выражен зависимостью, а не порядком
+# перечисления.
+k3s-deploy-data: k3s-secrets-check k3s-preflight-data
 	@set -eu; . ./$(K3S_SECRETS_ENV); \
 	for s in $(K3S_MIGRATED_SERVICES); do \
 		short=$${s#service-}; \
@@ -478,13 +476,30 @@ k3s-preflight: k3s-secrets-check
 	@set -eu; set -a; . ./$(K3S_SECRETS_ENV); set +a; \
 	sh infra/k3s-preflight.sh $(SERVICES_TSV)
 
+# Версия без проверки тегов — для слоя данных. Postgres и Redis поднимаются
+# ДО того, как существуют образы bff и frontend: при бутстрапе чистого
+# стенда это первый выполняемый шаг. Требовать от него неизменяемого тега
+# фронта значило бы сломать самый первый сценарий ради проверки, к слою
+# данных отношения не имеющей. Пароли — проверяются полностью, они его как
+# раз и касаются.
+k3s-preflight-data: k3s-secrets-check
+	@set -eu; set -a; . ./$(K3S_SECRETS_ENV); set +a; \
+	sh infra/k3s-preflight.sh --skip-tags $(SERVICES_TSV)
+
 # Последовательно и в порядке файла, а не через список зависимостей:
 # зависимости make под `-j` выполняются параллельно, а порядок
 # auth → bff → frontend обязателен (см. шапку infra/services.tsv).
-# k3s-preflight здесь не повторяется: он уже предпосылка k3s-deploy-data,
-# то есть гарантированно проходит до первого изменения в кластере.
-k3s-deploy: k3s-deploy-data
-	@set -e; for s in $(K3S_SERVICES); do $(MAKE) --no-print-directory k3s-deploy-$$s; done
+# k3s-preflight — ЕДИНСТВЕННАЯ предпосылка, и это существенно. Полный выкат
+# обязан обрываться до любых изменений в кластере, включая слой данных;
+# значит проверки (с тегами) должны пройти раньше k3s-deploy-data. Записать
+# это перечислением `k3s-deploy: k3s-preflight k3s-deploy-data` нельзя:
+# предпосылки выполняются слева направо только без `-j`. Поэтому
+# k3s-deploy-data вызывается ИЗ РЕЦЕПТА — рецепт начинается только после
+# того, как единственная предпосылка выполнена, при любом режиме make.
+k3s-deploy: k3s-preflight
+	@set -e; \
+	$(MAKE) --no-print-directory k3s-deploy-data; \
+	for s in $(K3S_SERVICES); do $(MAKE) --no-print-directory k3s-deploy-$$s; done
 
 # --- Full cycle ---
 up-k3s: k3s-build k3s-deploy

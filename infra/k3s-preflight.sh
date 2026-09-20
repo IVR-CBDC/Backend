@@ -12,7 +12,7 @@
 # проверки прогоняются по всем строкам, потом выкатывается.
 #
 # Использование:
-#   sh infra/k3s-preflight.sh [--tags-only] <путь к services.tsv> [сервис ...]
+#   sh infra/k3s-preflight.sh [--tags-only|--skip-tags] <путь к services.tsv> [сервис ...]
 #
 # --tags-only — проверять только теги образов, без паролей. Нужен там, где
 # паролей нет и быть не должно: на раннере GitHub Actions перед `docker
@@ -20,6 +20,14 @@
 # frontend-tags.env даёт в реестре отсутствующий образ, и без этой проверки
 # первым красным сообщением было бы «образа нет или он недоступен токену»,
 # после чего человек ушёл бы разбираться с правами ghcr вместо тега.
+#
+# --skip-tags — обратный случай: проверять всё, кроме тегов. Нужен слою
+# данных (make k3s-deploy-data). Postgres и Redis поднимаются ДО того, как
+# в природе существуют образы bff и frontend: при бутстрапе чистого стенда
+# это первый выполняемый шаг. Требовать от него неизменяемого тега фронта
+# значило бы сломать ровно тот сценарий, который случается первым, ради
+# проверки, к слою данных отношения не имеющей. Пароли при этом проверяются
+# полностью — они как раз его и касаются.
 #
 # Пароли БД читаются ИЗ ОКРУЖЕНИЯ по именам из последней колонки tsv:
 # локально их экспортирует Makefile из infra/helm/secrets-k3s.env, в CD они
@@ -32,10 +40,11 @@
 set -eu
 
 TAGS_ONLY=0
-if [ "${1-}" = "--tags-only" ]; then
-    TAGS_ONLY=1
-    shift
-fi
+SKIP_TAGS=0
+case "${1-}" in
+    --tags-only) TAGS_ONLY=1; shift ;;
+    --skip-tags) SKIP_TAGS=1; shift ;;
+esac
 
 TSV="${1:?первым аргументом — путь к services.tsv}"
 shift
@@ -88,7 +97,7 @@ while read -r name build cppbase mig tagsrc pwvar; do
     fi
 
     # --- тег образа ---
-    if [ "$tagsrc" != sha ]; then
+    if [ "$tagsrc" != sha ] && [ "$SKIP_TAGS" = 0 ]; then
         eval "tag=\${$tagsrc-}"
         if [ -z "$tag" ]; then
             note "$name: $tagsrc пуст или отсутствует в $TAGS_FILE"
@@ -153,8 +162,7 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-if [ "$TAGS_ONLY" = 1 ]; then
-    echo "preflight (только теги): ok ($(wc -l < "$ROWS" | tr -d ' ') сервис(ов))"
-else
-    echo "preflight: ok ($(wc -l < "$ROWS" | tr -d ' ') сервис(ов))"
-fi
+scope=""
+[ "$TAGS_ONLY" = 1 ] && scope=" (только теги)"
+[ "$SKIP_TAGS" = 1 ] && scope=" (без тегов)"
+echo "preflight$scope: ok ($(wc -l < "$ROWS" | tr -d ' ') сервис(ов))"
