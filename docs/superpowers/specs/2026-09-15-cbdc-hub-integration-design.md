@@ -320,7 +320,12 @@ fixed_fee, subtotal, clamped, multiplier, total} | null}` (`subtotal` — сум
   (и core → commission). Пароли БД → `Secret` (сейчас открытым текстом в values).
   Миграции в values генерирует `infra/gen-migration-values.sh` из `services/*/migrations` —
   убирает ручное дублирование SQL в values. TCP-DNS обход в init-контейнере сохраняется.
-- **Readiness/liveness:** `/health` каждого сервиса; bff проверяет Redis.
+- **Readiness/liveness:** `livenessProbe` — `/health` каждого сервиса (живость процесса,
+  без обращений к сети); `readinessProbe` — `/health` у auth, core и commission и
+  **`/ready`** у bff (там готовность отдельная ручка: подписка на Redis в моменте плюс
+  доступность auth/core/commission). Разделение введено в плане 05 намеренно: если
+  liveness ходит в апстримы, недоступность соседнего сервиса перезапускает исправный под
+  и превращает единичный отказ в каскадный.
 - **CI Backend (PR):** сборка образов (кэш buildx), Catch2, pytest commission, compose up +
   `tests/api` (pytest + httpx), shellcheck на infra-скрипты.
 - **CD Backend (main):** build+push всех backend-образов с тегом `sha` → `helm upgrade` для
