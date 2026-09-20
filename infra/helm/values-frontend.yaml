@@ -43,11 +43,22 @@ ingress:
 cors:
   enabled: false
 
-# NetworkPolicy выключена по той же причине, что у bff: единственный
-# источник трафика — Traefik из другого namespace, и его метки без живого
-# кластера неизвестны. См. комментарий в values-bff.yaml.
+# NetworkPolicy выключена по той же причине, что у bff: источник трафика —
+# Traefik из другого namespace, и его метки без живого кластера неизвестны.
+# Следствие называем прямо: без политики к этому поду (и к bff:4000) может
+# ходить ЛЮБОЙ под кластера, минуя Traefik и его middleware целиком. См.
+# values-bff.yaml.
 networkPolicy:
   enabled: false
+
+# ПОРЯДОК ВЫКАТА: bff → frontend, не наоборот.
+#
+# nginx резолвит `bff` при разборе конфига, на старте, а не при первом
+# запросе (frontend/nginx.conf, proxy_pass http://bff:4000). Если пода bff в
+# namespace ещё нет, nginx падает с `[emerg] host not found in upstream
+# "bff"` и уходит в CrashLoopBackOff — выглядит это как сломанный образ
+# фронта, хотя сломан порядок выката. Воспроизведено локально.
+# CD (Task 3) обязан выкатывать bff первым.
 
 # nginx не знает ничего о готовности бэкенда за ним — обе пробы проверяют
 # ровно то, что он отдаёт SPA. Отдельного /ready у статики нет, поэтому
@@ -68,24 +79,23 @@ podSecurityContext:
 
 securityContext:
   allowPrivilegeEscalation: false
-  # ТОЧЕЧНОЕ исключение, единственное в пяти сервисах.
-  #
-  # nginx пишет в корневую ФС при каждом старте: кеши проксирования в
-  # /var/cache/nginx (client_body, proxy, fastcgi, uwsgi, scgi — каталоги
-  # создаются самим nginx), pid-файл в /tmp/nginx.pid, плюс штатный
-  # docker-entrypoint.d прогоняет по /etc/nginx/conf.d свои скрипты
-  # (10-listen-on-ipv6-on-ipv4.sh правит default.conf через sed -i). С
-  # readOnlyRootFilesystem: true под не поднимется.
-  #
-  # Лечится это emptyDir-томами на /var/cache/nginx, /tmp и /etc/nginx/conf.d,
-  # но проверить такой набор можно только на живом кластере — а выдуманный
-  # список смонтированных каталогов хуже честного исключения. Поэтому здесь
-  # выключено ЛОКАЛЬНО, у одного сервиса, а не в чарте: остальные четыре
-  # остаются с readOnlyRootFilesystem: true.
-  #
-  # Остальные ограничения (runAsNonRoot, drop ALL, no privilege escalation)
-  # у фронта в силе — именно ради них образ и перевели на 8080.
-  readOnlyRootFilesystem: false
+  # Исключений нет: read-only корень фронту не мешает, нужен только
+  # записываемый /tmp — см. extraVolumes ниже.
+  readOnlyRootFilesystem: true
   capabilities:
     drop:
       - ALL
+
+# Единственный каталог, в который nginx обязан писать. nginx-unprivileged
+# держит в /tmp и pid-файл, и все *_temp-пути (proxy_temp, client_body_temp,
+# fastcgi_temp, …) — без него под падает на `mkdir() "/tmp/proxy_temp"
+# failed (30: Read-only file system)`. /var/cache/nginx монтировать НЕ надо
+# (проверено локально: `docker run --read-only --user 101:101 --tmpfs /tmp`
+# отдаёт 200), а `sed -i` из docker-entrypoint.d по /etc/nginx печатает
+# `info:` и не фатален.
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp

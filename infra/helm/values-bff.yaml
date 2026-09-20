@@ -22,32 +22,33 @@ jwtKeys:
 
 # Проверка cookie-сессии живёт в самом BFF (JWT проверяет auth), ключи здесь
 # не монтируются.
-env:
-  - name: PORT
-    value: "4000"
+# Все переменные — map, а не список, и это не вкусовщина.
+#
+# ALLOWED_ORIGINS и COOKIE_SECURE обязаны быть параметрами (Global
+# Constraints плана 08), то есть их переопределяет CD. В списочной форме это
+# `--set env[5].value=...` — адрес по индексу массива: вставка любой
+# переменной выше по списку молча переназначит другую, и для CORS это
+# означает тихо разрешённый чужой origin, который видно только из браузера.
+# Здесь — `--set envMap.ALLOWED_ORIGINS=...`, к порядку не чувствительно.
+#
+# Запятые экранируются, их режет сам `--set`:
+#   --set-string envMap.ALLOWED_ORIGINS='https://стенд\,https://второй'
+envMap:
+  PORT: "4000"
   # Имена сервисов — те же релизы этого чарта в namespace backend.
-  - name: AUTH_URL
-    value: "http://service-auth.backend.svc.cluster.local:8080"
-  - name: CORE_URL
-    value: "http://service-core.backend.svc.cluster.local:8080"
-  - name: COMMISSION_URL
-    value: "http://service-commission.backend.svc.cluster.local:8000"
+  AUTH_URL: "http://service-auth.backend.svc.cluster.local:8080"
+  CORE_URL: "http://service-core.backend.svc.cluster.local:8080"
+  COMMISSION_URL: "http://service-commission.backend.svc.cluster.local:8000"
   # Redis из слоя данных (Makefile k3s-deploy-data, architecture=standalone —
   # отсюда имя сервиса redis-master), тот же адрес, что у service-core.
-  - name: REDIS_URL
-    value: "redis://redis-master.data.svc.cluster.local:6379"
-  # Параметр, а не литерал (Global Constraints плана 08): CD обязан
-  # переопределить список адресом стенда — `--set env[?].value` неудобен,
-  # поэтому на практике это делается отдельным `-f` или --set-string по
-  # индексу. Дефолт оставлен рабочим, а не пустым: BFF падает при старте с
-  # пустым ALLOWED_ORIGINS (bff/src/config.ts), и молчаливый дефолт `*` здесь
-  # был бы хуже неправильного localhost.
-  - name: ALLOWED_ORIGINS
-    value: "http://localhost,http://127.0.0.1"
+  REDIS_URL: "redis://redis-master.data.svc.cluster.local:6379"
+  # Дефолт рабочий, а не пустой: BFF падает при старте с пустым
+  # ALLOWED_ORIGINS (bff/src/config.ts), а молчаливый `*` здесь был бы хуже
+  # неправильного localhost. CD обязан переопределить адресом стенда.
+  ALLOWED_ORIGINS: "http://localhost,http://127.0.0.1"
   # Стенд ходит по http, cookie с Secure до браузера не доедет. За TLS —
-  # `--set-string env[?].value=true`, а не правка этого файла.
-  - name: COOKIE_SECURE
-    value: "false"
+  # `--set envMap.COOKIE_SECURE=true`, а не правка этого файла.
+  COOKIE_SECURE: "false"
 
 migrations:
   enabled: false
@@ -72,18 +73,23 @@ cors:
 
 # NetworkPolicy у bff намеренно ВЫКЛЮЧЕНА, и это не забытый флаг.
 #
-# К bff ходит Traefik — под из другого namespace (у k3s это kube-system),
-# и правило под него требует знать его метки и namespace в живом кластере.
-# Здесь кластера нет; неверный podSelector не «чуть-чуть не тот» — он молча
-# закрывает единственный вход в систему, и выглядит это как «стенд лёг».
-# Плюс к bff ходит nginx фронта (frontend/nginx.conf проксирует /api и /ws
-# на bff:4000), то есть источников как минимум два.
+# ЧТО ЭТО ЗНАЧИТ, ПРЯМЫМ ТЕКСТОМ: к bff:4000 может ходить ЛЮБОЙ под
+# кластера, минуя Traefik и его middleware (CORS, будущий rate limit)
+# целиком. Внутренний периметр auth/core/commission от этого не страдает —
+# те пускают только bff, — но сам bff внутри кластера сейчас не защищён
+# ничем. Это незакрытый пункт, а не «периметр держится на Traefik».
 #
-# Периметр bff закрыт снаружи Traefik'ом, а внутренний периметр — это
-# политики auth/core/commission, которые пускают только bff. Включать это
-# правило — задача первого выката на живой кластер: там надо посмотреть
+# Почему не закрыт здесь: к bff ходит Traefik — под из другого namespace
+# (у k3s это kube-system), и правило под него требует знать его метки и
+# namespace в живом кластере. Кластера здесь нет; неверный podSelector не
+# «чуть-чуть не тот» — он закрывает единственный вход в систему, и выглядит
+# это как «стенд лёг». Плюс к bff ходит nginx фронта (frontend/nginx.conf
+# проксирует /api и /ws на bff:4000), то есть источников как минимум два.
+#
+# Закрывается это на первом выкате:
 # `kubectl get pod -n kube-system -l app.kubernetes.io/name=traefik --show-labels`
-# и записать реальные метки.
+# → записать реальные метки в allowFrom, namespace — в
+# networkPolicy.namespace, и добавить сюда же под frontend.
 networkPolicy:
   enabled: false
 

@@ -1,6 +1,31 @@
 {{- if and .Values.podSecurityContext.runAsNonRoot (not .Values.podSecurityContext.runAsUser) }}
 {{- fail "podSecurityContext.runAsNonRoot=true без runAsUser: ни один из образов платформы не объявляет ЧИСЛОВОГО USER (auth/core — вообще никакого, commission — нечисловой `app`), поэтому kubelet не может доказать, что процесс не root, и откажется стартовать контейнер. Задайте runAsUser явно." }}
 {{- end }}
+{{- /*
+  Сверка ссылок на ключи Secret'а с тем, что в Secret'е реально есть.
+
+  Без неё `--set secrets.data.pgDsn=...` без `dbPassword` рендерится
+  успешно, а init-контейнер ссылается на несуществующий ключ. Kubelet в этом
+  случае не падает при создании Deployment — он поднимает под и оставляет
+  его в CreateContainerConfigError, то есть ошибка вылезает уже на кластере
+  и выглядит как «под не стартует», а не как «забыли --set».
+*/ -}}
+{{- $data := .Values.secrets.data | default dict -}}
+{{- if .Values.migrations.enabled }}
+{{- $mk := required "migrations.enabled=true требует migrations.db.passwordSecretKey — имя ключа в Secret релиза. Пустое значение оставило бы init-контейнер с пустым DB_PASSWORD." .Values.migrations.db.passwordSecretKey }}
+{{- if not (hasKey $data $mk) }}
+{{- fail (printf "migrations.db.passwordSecretKey=%q, но ключа %q нет в secrets.data (есть: %v). Kubelet не ошибётся при apply — под встанет в CreateContainerConfigError. Передайте --set secrets.data.%s=... или исправьте имя ключа." $mk $mk (keys $data) $mk) }}
+{{- end }}
+{{- end }}
+{{- range .Values.envSecret }}
+{{- $ek := required (printf "envSecret[%s].key обязателен: без ключа переменная молча приехала бы пустой" .name) .key }}
+{{- if not (hasKey $data $ek) }}
+{{- fail (printf "envSecret %q ссылается на ключ %q, которого нет в secrets.data (есть: %v). На кластере это CreateContainerConfigError, а не ошибка apply." .name $ek (keys $data)) }}
+{{- end }}
+{{- end }}
+{{- if and (or .Values.envSecret .Values.migrations.enabled) (not .Values.secrets.enabled) }}
+{{- fail "есть ссылки на Secret релиза (envSecret или миграции), но secrets.enabled=false — Secret просто не отрендерится, и под встанет в CreateContainerConfigError." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,9 +41,24 @@ spec:
     metadata:
       labels:
         {{- include "generic-service.selectorLabels" . | nindent 8 }}
-      {{- if .Values.migrations.enabled }}
+      {{- if or .Values.migrations.enabled .Values.secrets.enabled .Values.config.enabled }}
+      # Перезапуск пода при смене того, что примонтировано или подставлено.
+      #
+      # Для config.json это не оптимизация, а единственный способ: он
+      # монтируется через subPath, а subPath-тома kubelet не обновляет
+      # ВООБЩЕ — без чексуммы под остался бы со старым паролем навсегда,
+      # даже после `helm upgrade`, и «ротация пароля» была бы ротацией
+      # только в Secret'е.
       annotations:
+        {{- if .Values.migrations.enabled }}
         checksum/migrations: {{ include (print $.Template.BasePath "/migrations-configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if .Values.secrets.enabled }}
+        checksum/secrets: {{ .Values.secrets.data | toYaml | sha256sum }}
+        {{- end }}
+        {{- if .Values.config.enabled }}
+        checksum/config: {{ tpl (.Values.config.json | toPrettyJson) . | sha256sum }}
+        {{- end }}
       {{- end }}
     spec:
       {{- if .Values.imagePullSecrets }}
@@ -131,10 +171,17 @@ spec:
           ports:
             - containerPort: {{ .Values.service.port }}
               protocol: TCP
-          {{- if or .Values.env .Values.envSecret }}
+          {{- if or .Values.env .Values.envMap .Values.envSecret }}
           env:
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- /* quote обязателен: env в Kubernetes — всегда строка, а
+                   `--set envMap.COOKIE_SECURE=false` без него отрендерился бы
+                   YAML-булевым и был бы отвергнут API-сервером. */ -}}
+            {{- range $name, $value := .Values.envMap }}
+            - name: {{ $name }}
+              value: {{ $value | toString | quote }}
             {{- end }}
             {{- range .Values.envSecret }}
             - name: {{ .name }}
@@ -178,7 +225,13 @@ spec:
               subPath: jwt_private.jwk
               readOnly: true
             {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- if .Values.config.enabled }}
         - name: config
           {{- if .Values.config.secret }}

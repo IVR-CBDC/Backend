@@ -71,9 +71,13 @@ migrations:
 # Значения секретов в репозиторий не коммитятся — приезжают из CD
 # (`--set secrets.data.dbPassword=...`) или файлом вне git. В compose пароль
 # остаётся открытым намеренно (локальный стенд, README).
+# Ключ объявлен пустым, а не отсутствует: имя ключа видно в файле (на него
+# ссылаются config.json и migrations.db.passwordSecretKey), а забытый `--set`
+# роняет рендер сообщением про пустое значение, а не про отсутствующий ключ.
 secrets:
   enabled: true
-  data: {}
+  data:
+    dbPassword: ""
 
 # План 08 / спека §3: наружу service-core не публикуется — к нему ходит
 # только BFF внутри кластера. Заодно это закрывает внутреннюю ручку
@@ -98,3 +102,14 @@ networkPolicy:
 
 healthcheck:
   path: /health
+
+# То же, что у service-auth: Drogon создаёт ./uploads/tmp/00 … FF
+# относительно cwd (/app) при старте, и под read-only корнем это даёт 256
+# строк ERROR на каждый рестарт. Сервис от этого не падает, но лог
+# становится нечитаемым. Загрузок файлов в сервисе нет — emptyDir.
+extraVolumes:
+  - name: uploads
+    emptyDir: {}
+extraVolumeMounts:
+  - name: uploads
+    mountPath: /app/uploads

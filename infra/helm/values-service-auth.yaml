@@ -63,9 +63,14 @@ migrations:
 #
 # В compose пароль остаётся открытым (`auth`) намеренно: это локальный стенд,
 # решение записано в README. Secret — про k3s.
+# Ключ объявлен пустым, а не отсутствует: так имя ключа видно в файле (на
+# него ссылаются и config.json, и migrations.db.passwordSecretKey), а забытый
+# `--set` роняет рендер с сообщением про пустое значение, а не про
+# отсутствующий ключ.
 secrets:
   enabled: true
-  data: {}
+  data:
+    dbPassword: ""
 
 # План 08 / спека §3: наружу service-auth не публикуется — к нему ходит
 # только BFF внутри кластера. IngressRoute и CORS-middleware здесь не
@@ -88,3 +93,18 @@ networkPolicy:
 
 healthcheck:
   path: /health
+
+# Drogon при старте создаёт дерево временных каталогов для загрузок
+# относительно cwd (/app): ./uploads/tmp/00 … ./uploads/tmp/FF. С read-only
+# корнем это не фатально — сервис поднимается и отдаёт /health 200 (проверено
+# ревьюером запуском под `--read-only`), — но печатает 256 строк
+# `ERROR Error 30 creating path ./uploads/tmp/XX/: Read-only file system`
+# при каждом рестарте. Лог, в котором 256 строк ERROR — это норма, перестаёт
+# работать как лог. emptyDir дешевле, чем приучать себя их не замечать:
+# загрузки файлов в сервисе нет, состояния в каталоге не появляется.
+extraVolumes:
+  - name: uploads
+    emptyDir: {}
+extraVolumeMounts:
+  - name: uploads
+    mountPath: /app/uploads

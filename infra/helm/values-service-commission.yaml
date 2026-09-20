@@ -27,13 +27,24 @@ envSecret:
   - name: PG_DSN
     key: pgDsn
 
-# Значения секретов в репозиторий не коммитятся. Для k3s:
-#   --set secrets.data.dbPassword=... \
-#   --set secrets.data.pgDsn=postgresql+asyncpg://commission:<пароль>@pg-commission-postgresql.data.svc.cluster.local:5432/commission
-# В compose DSN остаётся открытым намеренно (локальный стенд, README).
+# Значения секретов в репозиторий не коммитятся. Снаружи передаётся ОДИН
+# пароль:
+#   --set secrets.data.dbPassword='<пароль>'
+#
+# DSN собирается здесь же из него. Двумя независимыми --set (отдельно
+# dbPassword, отдельно готовый pgDsn с тем же паролем внутри) это разъехалось
+# бы при первой ротации молча: сервис ходил бы со старым паролем, миграции с
+# новым, и выглядело бы это как «БД отказывает через раз». Одна строчка
+# правды — dbPassword.
+#
+# Шаблон в значении раскрывает secret.yaml через tpl; кавычки обратные —
+# см. values чарта. В compose DSN остаётся открытым намеренно (локальный
+# стенд, README).
 secrets:
   enabled: true
-  data: {}
+  data:
+    dbPassword: ""
+    pgDsn: "postgresql+asyncpg://commission:{{ required `secrets.data.dbPassword обязателен для service-commission: из него собирается pgDsn` .Values.secrets.data.dbPassword }}@pg-commission-postgresql.data.svc.cluster.local:5432/commission"
 
 migrations:
   enabled: true
