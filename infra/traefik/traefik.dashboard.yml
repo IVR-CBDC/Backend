@@ -1,0 +1,30 @@
+# Статическая конфигурация Traefik ДЛЯ ОВЕРЛЕЯ `docker-compose.dashboard.yml`.
+#
+# Зачем отдельный файл, а не CLI-флаг: при запуске с `--configFile` Traefik
+# читает статическую конфигурацию только из этого файла и CLI-флаги
+# игнорирует — `--api.insecure=true` в команде контейнера не включает ничего,
+# дашборд продолжает отдавать 404 (проверено вживую, см. отчёт task-1,
+# раунд 2). Поэтому оверлей подменяет сам `/etc/traefik/traefik.yml`.
+#
+# Всё остальное здесь обязано совпадать с infra/traefik/traefik.yml —
+# отличается только блок `api`.
+
+api:
+  dashboard: true
+  # Без аутентификации, поэтому оверлей привязывает порт к 127.0.0.1.
+  # В k3s этот файл не используется вообще.
+  insecure: true
+
+ping: {}
+
+entryPoints:
+  web:
+    address: ":80"
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+
+log:
+  level: INFO
