@@ -1,4 +1,5 @@
 .PHONY: keys cpp-base up down logs test-register test-login test-me smoke-commission test-commission test-commission-db test-cpp test-api test-all smoke-deal lsp openapi \
+       e2e-stand-up e2e-stand-down \
        new-cpp new-python k3s-install k3s-import-images k3s-setup \
        k3s-build k3s-deploy k3s-deploy-data up-k3s down-k3s k3s-status \
        k3s-test-health k3s-test-auth k3s-test-core
@@ -72,6 +73,54 @@ test-api:
 		pg-core migrate-core service-core \
 		pg-commission migrate-commission service-commission redis
 	cd tests/api && uv run --with httpx --with pytest pytest -q
+
+# ============================================================
+# e2e (план 07, задача 3, Frontend-репозиторий): полный стенд для Playwright
+# из ../alfa-cbdc-hub/e2e — auth/core/commission/redis (как test-api) плюс
+# bff/frontend под своими профилями, с EMULATOR_MANUAL=true.
+#
+# Ловушка, найденная при отладке плана 07 (задача 2): единственным способом
+# поднять такой стенд руками было набрать
+#   EMULATOR_MANUAL=true docker compose ... --profile bff --profile frontend up -d --wait
+# — а если потом (по любой причине, например пересобрать/поднять только
+# bff/frontend после правки) выполнить тот же `up --profile bff --profile
+# frontend ...` ЕЩЁ РАЗ без префикса EMULATOR_MANUAL=true, compose
+# пересчитывает желаемое состояние service-core (он не под профилем
+# bff/frontend, входит в дефолтный набор, но пересчитывается при каждом up
+# того же проекта) — и раз в этот раз EMULATOR_MANUAL не передана,
+# пересоздаёт контейнер со значением по умолчанию (false, см.
+# docker-compose.yml: `EMULATOR_MANUAL: "${EMULATOR_MANUAL:-false}"`).
+# Результат — тихая потеря детерминированности уже идущих e2e, без единого
+# предупреждения.
+#
+# Эта цель — единственный поддерживаемый способ поднять стенд под e2e:
+# EMULATOR_MANUAL=true зашита в саму команду (а не в переменную окружения
+# вызывающего), поэтому её невозможно забыть при повторном вызове — сколько
+# раз `make e2e-stand-up` ни выполни подряд, service-core всегда пересоздаётся
+# (если вообще пересоздаётся) с одним и тем же значением.
+#
+# BFF_IMAGE/FRONTEND_IMAGE — чтобы поднять bff/frontend из уже собранных
+# образов (например, из Frontend CI, см. .github/workflows/ci.yml того
+# репозитория), не из ghcr-плейсхолдера по умолчанию:
+#   BFF_IMAGE=bff-ci:latest FRONTEND_IMAGE=frontend-ci:latest make e2e-stand-up
+# Без них компоуз попробует стянуть ghcr.io/ivr-cbdc/frontend/{bff,spa} —
+# либо собери их локально через docker-compose.override.yml.example (см.
+# README, раздел «BFF»), либо передай свои теги как выше.
+# ============================================================
+e2e-stand-up: keys
+	@docker image inspect ivr-cpp-base:latest >/dev/null 2>&1 || $(MAKE) cpp-base
+	EMULATOR_MANUAL=true docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+		--profile bff --profile frontend up -d --build --wait
+	@echo ""
+	@echo "Стенд под e2e поднят (EMULATOR_MANUAL=true):"
+	@echo "  SPA: http://127.0.0.1:8090"
+	@echo "  BFF: http://127.0.0.1:14000"
+
+# Останавливает только bff/frontend — не трогает остальной стенд (auth/core/
+# commission/БД), он может быть нужен для чего-то ещё (make test-api и т.п.).
+e2e-stand-down:
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+		--profile bff --profile frontend stop bff frontend
 
 # Три набора, что гоняет CI на каждый PR (см. .github/workflows/ci.yml).
 # test-commission-db сюда намеренно не входит: ему нужен поднятый
