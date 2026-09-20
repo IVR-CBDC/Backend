@@ -17,10 +17,23 @@ jwtKeys:
   mountPath: /etc/keys
 
 env:
-  - name: PG_DSN
-    value: "postgresql+asyncpg://commission:commission@pg-commission-postgresql.data.svc.cluster.local:5432/commission"
   - name: JWT_PUBLIC_KEY_PATH
     value: /etc/keys/jwt_public.pem
+
+# PG_DSN целиком уезжает в Secret: пароль здесь — часть строки подключения,
+# и «вынести только пароль» нельзя, не собирая DSN внутри сервиса (а это код
+# service-commission, не инфраструктура).
+envSecret:
+  - name: PG_DSN
+    key: pgDsn
+
+# Значения секретов в репозиторий не коммитятся. Для k3s:
+#   --set secrets.data.dbPassword=... \
+#   --set secrets.data.pgDsn=postgresql+asyncpg://commission:<пароль>@pg-commission-postgresql.data.svc.cluster.local:5432/commission
+# В compose DSN остаётся открытым намеренно (локальный стенд, README).
+secrets:
+  enabled: true
+  data: {}
 
 migrations:
   enabled: true
@@ -30,7 +43,7 @@ migrations:
     port: "5432"
     name: commission
     user: commission
-    password: commission
+    passwordSecretKey: dbPassword
 
 # План 08 / спека §3: наружу не публикуется.
 ingress:

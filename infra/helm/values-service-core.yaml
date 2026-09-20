@@ -7,8 +7,11 @@ image:
 service:
   port: 8080
 
+# config.json содержит пароль БД (db_clients[].passwd), поэтому едет Secret'ом,
+# а не ConfigMap (план 08).
 config:
   enabled: true
+  secret: true
   json:
     app:
       threads_num: 4
@@ -25,7 +28,10 @@ config:
         port: 5432
         dbname: core
         user: core
-        passwd: core
+        # Пароль не литерал: подставляется из Secret релиза при рендере.
+        # Обратные кавычки обязательны — см. комментарий к config.json в
+        # values чарта (toPrettyJson экранировал бы двойные).
+        passwd: "{{ required `secrets.data.dbPassword обязателен для service-core: передайте --set secrets.data.dbPassword=... (CD) или -f файлом вне git` .Values.secrets.data.dbPassword }}"
         is_fast: false
         connection_number: 8
     redis_clients:
@@ -60,7 +66,14 @@ migrations:
     port: "5432"
     name: core
     user: core
-    password: core
+    passwordSecretKey: dbPassword
+
+# Значения секретов в репозиторий не коммитятся — приезжают из CD
+# (`--set secrets.data.dbPassword=...`) или файлом вне git. В compose пароль
+# остаётся открытым намеренно (локальный стенд, README).
+secrets:
+  enabled: true
+  data: {}
 
 # План 08 / спека §3: наружу service-core не публикуется — к нему ходит
 # только BFF внутри кластера. Заодно это закрывает внутреннюю ручку

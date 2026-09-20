@@ -13,6 +13,10 @@ compile_commands.json
 cmake-build-debug/
 infra/helm/generated/
 
+# Значения секретов для helm (план 08): пароли БД передаются либо --set из
+# CD, либо таким файлом. В репозиторий он не попадает никогда.
+infra/helm/secrets-*.yaml
+
 # smoke-цели сохраняют сюда cookie сессии (make test-login)
 .smoke-cookies.txt
 .k3s-smoke-cookies.txt

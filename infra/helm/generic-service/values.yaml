@@ -12,9 +12,45 @@ service:
 
 env: []
 
+# Переменные окружения, значение которых — ключ в Secret этого релиза
+# (`<release>-secrets`, см. `secrets` ниже). Сюда идёт всё, что не должно
+# лежать в values открытым текстом: пароль БД, готовый DSN и т.п.
+#
+#   envSecret:
+#     - name: PG_DSN
+#       key: pgDsn
+#
+# `name` — имя переменной в контейнере, `key` — ключ в `secrets.data`.
+envSecret: []
+
 config:
   enabled: false
+  # config.json содержит учётные данные (в db_clients у C++-сервисов лежит
+  # `passwd`), поэтому для таких сервисов он обязан ехать Secret'ом, а не
+  # ConfigMap: ConfigMap отдаётся любому, у кого есть `get configmaps` в
+  # namespace, и попадает в `kubectl describe` целиком.
+  secret: false
+  # Значения config.json прогоняются через `tpl`, то есть могут ссылаться на
+  # другие values. Ровно для этого: пароль в values не пишется литералом, а
+  # подставляется из секрета —
+  #   passwd: "{{ required `...` .Values.secrets.data.dbPassword }}"
+  # Кавычки внутри шаблона ОБЯЗАНЫ быть обратными: config.json сериализуется
+  # через toPrettyJson до tpl, и двойные кавычки приехали бы в шаблон
+  # экранированными (\"), на чём Go-шаблонизатор падает.
   json: {}
+
+# Secret релиза (`<release>-secrets`). Значения в репозиторий не коммитятся:
+# они приезжают из CD через `--set secrets.data.<key>=...` или из внешнего
+# файла (`-f secrets-local.yaml`), который лежит вне git.
+#
+# В compose пароли остаются открытым текстом — это осознанное решение для
+# локального стенда (см. README, раздел про секреты). Этот Secret — про k3s.
+secrets:
+  enabled: false
+  # Пустое значение у объявленного ключа роняет рендер: пустой пароль в
+  # Secret'е — это не «секрет не задан», а «сервис ушёл в БД с пустым
+  # паролем», и обнаруживается это уже в рантайме.
+  data: {}
 
 jwtKeys:
   private: false
@@ -32,7 +68,14 @@ migrations:
     port: "5432"
     name: ""
     user: ""
-    password: ""
+    # Пароль init-контейнера миграций приходит из того же Secret, что и
+    # пароль самого сервиса (`<release>-secrets`), — здесь только имя ключа.
+    # Открытым текстом пароль в values не хранится (план 08).
+    #
+    # Пусто при migrations.enabled=true = ошибка рендера: иначе init-контейнер
+    # ушёл бы в psql с пустым DB_PASSWORD, а секрет был бы наполовину
+    # бесполезен — сервис по секрету, миграции литералом.
+    passwordSecretKey: ""
 
 # Наружу (IngressRoute) публикуются только bff и frontend — спека §3.
 # Дефолт выключен намеренно: сервис торчит наружу, только если его values
@@ -40,6 +83,12 @@ migrations:
 ingress:
   enabled: false
   match: ""
+  # Приоритет маршрута Traefik. По умолчанию Traefik сортирует маршруты по
+  # длине правила, и `PathPrefix(`/`)` фронта при таком раскладе живёт лишь
+  # потому, что его правило короче. Полагаться на это нельзя: у frontend
+  # стоит явно низкий priority, у bff — высокий (так же, как в
+  # infra/traefik/dynamic.yml для compose). 0 = не задавать.
+  priority: 0
 
 cors:
   enabled: false
@@ -89,7 +138,42 @@ networkPolicy:
   # политики — значит пробы режутся здесь, и сюда идёт подсеть узлов.
   allowFromCIDRs: []
 
+# securityContext пода. runAsUser задаётся ЯВНО и не может быть пустым при
+# runAsNonRoot: образы service-auth и service-core не объявляют USER
+# (debian:bookworm-slim, см. их Dockerfile), а service-commission объявляет
+# нечисловой `USER app` — в обоих случаях kubelet не может доказать, что
+# пользователь не root, и отказывается стартовать контейнер
+# («container has runAsNonRoot and image will run as root» /
+# «...has non-numeric user»). Дефолт 65532 — общепринятый nonroot-uid; сервис
+# вправе переопределить его своим (у фронта — 101, пользователь nginx).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# securityContext контейнера.
+securityContext:
+  allowPrivilegeEscalation: false
+  # Дефолт — true. Выключается ТОЧЕЧНО, в values конкретного сервиса, с
+  # причиной: глобальное выключение сняло бы защиту и с тех четырёх, кому
+  # она ничего не стоит.
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
 healthcheck:
   path: /health
+  # Путь readinessProbe. Пусто = тот же, что у liveness.
+  #
+  # Это разделение не косметика: у BFF (план 05) `/health` — живость
+  # процесса без единой сетевой проверки, а `/ready` — настоящая готовность
+  # (Redis-подписка в моменте + доступность auth/core/commission). Если
+  # повесить livenessProbe на `/ready`, недоступный апстрим начнёт
+  # перезапускать здоровый под — ровно то, ради чего ручки и разделяли.
+  readinessPath: ""
   initialDelaySeconds: 5
   periodSeconds: 10

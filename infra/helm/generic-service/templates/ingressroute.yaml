@@ -9,8 +9,13 @@ spec:
   entryPoints:
     - web
   routes:
-    - match: {{ .Values.ingress.match }}
+    - match: {{ required "ingress.enabled=true требует непустой ingress.match: маршрут без правила Traefik молча не создаст." .Values.ingress.match }}
       kind: Rule
+      {{- if .Values.ingress.priority }}
+      # Явный приоритет: дефолтная сортировка Traefik по длине правила
+      # отдала бы /api фронту, стоит правилу bff стать короче.
+      priority: {{ .Values.ingress.priority }}
+      {{- end }}
       services:
         - name: {{ include "generic-service.fullname" . }}
           namespace: {{ .Release.Namespace }}

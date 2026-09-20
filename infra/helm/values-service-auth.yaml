@@ -7,8 +7,11 @@ image:
 service:
   port: 8080
 
+# config.json содержит пароль БД (db_clients[].passwd), поэтому едет Secret'ом,
+# а не ConfigMap (план 08).
 config:
   enabled: true
+  secret: true
   json:
     app:
       threads_num: 2
@@ -25,7 +28,10 @@ config:
         port: 5432
         dbname: auth
         user: auth
-        passwd: auth
+        # Пароль не литерал: подставляется из Secret релиза при рендере.
+        # Обратные кавычки обязательны — см. комментарий к config.json в
+        # values чарта (toPrettyJson экранировал бы двойные).
+        passwd: "{{ required `secrets.data.dbPassword обязателен для service-auth: передайте --set secrets.data.dbPassword=... (CD) или -f файлом вне git` .Values.secrets.data.dbPassword }}"
         is_fast: false
         connection_number: 4
 
@@ -49,7 +55,17 @@ migrations:
     port: "5432"
     name: auth
     user: auth
-    password: auth
+    passwordSecretKey: dbPassword
+
+# Значения секретов в репозиторий не коммитятся: `secrets.data` наполняется
+# из CD через `--set secrets.data.dbPassword=...` или файлом вне git. Здесь —
+# только факт «у этого релиза есть Secret».
+#
+# В compose пароль остаётся открытым (`auth`) намеренно: это локальный стенд,
+# решение записано в README. Secret — про k3s.
+secrets:
+  enabled: true
+  data: {}
 
 # План 08 / спека §3: наружу service-auth не публикуется — к нему ходит
 # только BFF внутри кластера. IngressRoute и CORS-middleware здесь не

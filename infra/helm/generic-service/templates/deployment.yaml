@@ -1,3 +1,6 @@
+{{- if and .Values.podSecurityContext.runAsNonRoot (not .Values.podSecurityContext.runAsUser) }}
+{{- fail "podSecurityContext.runAsNonRoot=true без runAsUser: ни один из образов платформы не объявляет ЧИСЛОВОГО USER (auth/core — вообще никакого, commission — нечисловой `app`), поэтому kubelet не может доказать, что процесс не root, и откажется стартовать контейнер. Задайте runAsUser явно." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,6 +26,10 @@ spec:
         {{- toYaml .Values.imagePullSecrets | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "generic-service.fullname" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       dnsConfig:
         options:
           - name: use-vc
@@ -30,6 +37,10 @@ spec:
       initContainers:
         - name: migrate
           image: {{ .Values.migrations.image }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           command:
             - /bin/sh
             - -c
@@ -96,8 +107,15 @@ spec:
               value: {{ .Values.migrations.db.name | quote }}
             - name: DB_USER
               value: {{ .Values.migrations.db.user | quote }}
+            # Пароль миграций приходит из того же Secret, что и пароль
+            # сервиса. Литералом здесь его быть не должно: иначе секрет
+            # защищает половину пути, а вторая половина лежит в values и
+            # в `kubectl describe pod`.
             - name: DB_PASSWORD
-              value: {{ .Values.migrations.db.password | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "generic-service.fullname" . }}-secrets
+                  key: {{ required "migrations.enabled=true требует migrations.db.passwordSecretKey — имя ключа в Secret релиза. Пустое значение оставило бы init-контейнер с пустым DB_PASSWORD." .Values.migrations.db.passwordSecretKey }}
           volumeMounts:
             - name: migrations
               mountPath: /migrations
@@ -106,13 +124,29 @@ spec:
         - name: {{ include "generic-service.name" . }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - containerPort: {{ .Values.service.port }}
               protocol: TCP
-          {{- if .Values.env }}
+          {{- if or .Values.env .Values.envSecret }}
           env:
-            {{- toYaml .Values.env | nindent 12 }}
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- range .Values.envSecret }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "generic-service.fullname" $ }}-secrets
+                  key: {{ required (printf "envSecret[%s].key обязателен: без ключа переменная молча приехала бы пустой" .name) .key }}
+            {{- end }}
           {{- end }}
+          # liveness — только живость процесса; readiness — готовность.
+          # У BFF это разные ручки (/health и /ready, план 05): недоступный
+          # апстрим обязан снимать под с балансировки, а не перезапускать его.
           livenessProbe:
             httpGet:
               path: {{ .Values.healthcheck.path }}
@@ -121,7 +155,7 @@ spec:
             periodSeconds: {{ .Values.healthcheck.periodSeconds }}
           readinessProbe:
             httpGet:
-              path: {{ .Values.healthcheck.path }}
+              path: {{ .Values.healthcheck.readinessPath | default .Values.healthcheck.path }}
               port: {{ .Values.service.port }}
             initialDelaySeconds: 3
             periodSeconds: 5
@@ -147,8 +181,14 @@ spec:
       volumes:
         {{- if .Values.config.enabled }}
         - name: config
+          {{- if .Values.config.secret }}
+          # config.json с паролем БД внутри — Secret, а не ConfigMap.
+          secret:
+            secretName: {{ include "generic-service.fullname" . }}-config
+          {{- else }}
           configMap:
             name: {{ include "generic-service.fullname" . }}-config
+          {{- end }}
         {{- end }}
         {{- if or .Values.jwtKeys.public .Values.jwtKeys.private }}
         - name: jwt-keys
