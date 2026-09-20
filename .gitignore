@@ -12,3 +12,17 @@ compile_commands.json
 .claude/
 cmake-build-debug/
 infra/helm/generated/
+
+# Значения секретов для helm (план 08): пароли БД передаются либо --set из
+# CD, либо таким файлом. В репозиторий он не попадает никогда.
+infra/helm/secrets-*.yaml
+# То же для локального выката через Makefile (план 08 Task 3): один файл с
+# паролями БД, который читают И k3s-deploy-data (пароль для Postgres), И
+# k3s-deploy-% (пароль в Secret релиза). Создаётся `make k3s-secrets`.
+infra/helm/secrets-*.env
+
+# smoke-цели сохраняют сюда cookie сессии (make test-login)
+.smoke-cookies.txt
+.k3s-smoke-cookies.txt
+.smoke-user.txt
+.k3s-smoke-user.txt

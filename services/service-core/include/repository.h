@@ -72,7 +72,13 @@ struct DealMutation {
 };
 
 struct ApplyResult {
-  enum class Status { ok, not_found, version_conflict } status;
+  // commit_failed — транзакция отработала, но COMMIT не прошёл: изменений в
+  // базе нет. Отдельный статус, а не исключение, потому что apply() зовут и
+  // из фонового тика эмулятора, где бросок оборвал бы обход остальных
+  // сделок; там он просто означает «этот шаг не удался». HTTP-вызывающие
+  // обязаны отвечать на него 500 INTERNAL_ERROR — `deal` в этом случае
+  // пустой. См. common/commit.h.
+  enum class Status { ok, not_found, version_conflict, commit_failed } status;
   std::optional<DealDetail> deal;
 };
 

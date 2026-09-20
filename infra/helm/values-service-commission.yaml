@@ -17,10 +17,45 @@ jwtKeys:
   mountPath: /etc/keys
 
 env:
-  - name: PG_DSN
-    value: "postgresql+asyncpg://commission:commission@pg-commission-postgresql.data.svc.cluster.local:5432/commission"
   - name: JWT_PUBLIC_KEY_PATH
     value: /etc/keys/jwt_public.pem
+
+# PG_DSN целиком уезжает в Secret: пароль здесь — часть строки подключения,
+# и «вынести только пароль» нельзя, не собирая DSN внутри сервиса (а это код
+# service-commission, не инфраструктура).
+envSecret:
+  - name: PG_DSN
+    key: pgDsn
+
+# Значения секретов в репозиторий не коммитятся. Снаружи передаётся ОДИН
+# пароль:
+#   --set secrets.data.dbPassword='<пароль>'
+#
+# DSN собирается здесь же из него. Двумя независимыми --set (отдельно
+# dbPassword, отдельно готовый pgDsn с тем же паролем внутри) это разъехалось
+# бы при первой ротации молча: сервис ходил бы со старым паролем, миграции с
+# новым, и выглядело бы это как «БД отказывает через раз». Одна строчка
+# правды — dbPassword.
+#
+# Шаблон в значении раскрывает secret.yaml через tpl; кавычки обратные —
+# см. values чарта. В compose DSN остаётся открытым намеренно (локальный
+# стенд, README).
+secrets:
+  enabled: true
+  # Сырое значение: приезжает снаружи как есть, шаблоном не обрабатывается.
+  data:
+    dbPassword: ""
+  # Выводимое: шаблон написан здесь, в репозитории, и раскрывается при
+  # рендере. Пароль в него подставляется, но сам шаблоном не считается —
+  # пароль с `{{` внутри ни рендер не уронит, ни подставится молча.
+  #
+  # requireUrlUserinfoSafe: пароль тут попадает в userinfo URL, и символ
+  # вроде `@`, `/`, `#`, `?` или `:` сместил бы границы разбора строки
+  # подключения — asyncpg увидел бы другой хост или другого пользователя,
+  # а Secret при этом выглядел бы совершенно правильным. Проверка, а не
+  # кодирование: см. helper, там причина.
+  derived:
+    pgDsn: "postgresql+asyncpg://commission:{{ required `secrets.data.dbPassword обязателен для service-commission: из него собирается pgDsn` .Values.secrets.data.dbPassword | include `generic-service.requireUrlUserinfoSafe` }}@pg-commission-postgresql.data.svc.cluster.local:5432/commission"
 
 migrations:
   enabled: true
@@ -30,8 +65,9 @@ migrations:
     port: "5432"
     name: commission
     user: commission
-    password: commission
+    passwordSecretKey: dbPassword
 
+# План 08 / спека §3: наружу не публикуется.
 ingress:
   enabled: false
 
@@ -40,6 +76,16 @@ cors:
 
 networkPolicy:
   enabled: true
+  # ВНИМАНИЕ: под `bff` появляется в кластере только с values-bff.yaml
+  # (Task 2 плана 08). До этого политика закрывает сервис для всех —
+  # Task 1 нельзя выкатывать в k3s в одиночку.
+  # Источник ищется в том же namespace (networkPolicy.namespace: "" в
+  # values чарта) — bff обязан жить в `backend` вместе с сервисами.
+  allowFrom:
+    # Единственное разрешённое межсервисное обращение по спеке §3:
+    # service-core → service-commission при подтверждении сценария.
+    - app.kubernetes.io/name: bff
+    - app.kubernetes.io/name: service-core
 
 healthcheck:
   path: /health

@@ -238,6 +238,10 @@ service:
 
 config:
   enabled: true
+  # config.json содержит пароль БД (db_clients[].passwd), поэтому он едет
+  # Secret'ом, а не ConfigMap: выносить пароль в Secret бессмысленно, если он
+  # же лежит в ConfigMap, который отдаётся любому с `get configmaps`.
+  secret: true
   json:
     app:
       threads_num: 4
@@ -254,7 +258,10 @@ config:
         port: 5432
         dbname: <name>
         user: <name>
-        passwd: <name>
+        # Пароль НЕ литерал: подставляется из Secret релиза при рендере.
+        # Обратные кавычки обязательны, jsonEscape тоже — иначе пароль с
+        # двойной кавычкой разорвал бы JSON, который поставил toPrettyJson.
+        passwd: "{{ required `secrets.data.dbPassword обязателен для service-<name>` .Values.secrets.data.dbPassword | include `generic-service.jsonEscape` }}"
         is_fast: false
         connection_number: 8
 
@@ -276,17 +283,55 @@ migrations:
     port: "5432"
     name: <name>
     user: <name>
-    password: <name>
+    # Init-контейнер миграций берёт пароль из того же Secret, что и сервис:
+    # иначе секрет защищал бы половину пути.
+    passwordSecretKey: dbPassword
 
-ingress:
+# Значения в репозиторий не коммитятся: приезжают из CD
+# (--set secrets.data.dbPassword=...) или из infra/helm/secrets-k3s.env.
+# Ключ объявлен пустым, а не отсутствует, — так имя видно в файле, а
+# забытый --set роняет рендер сообщением про пустое значение.
+secrets:
   enabled: true
-  match: "PathPrefix(`/api/<name>`)"
+  data:
+    dbPassword: ""
+
+# Наружу НЕ публикуется (спека §3, план 08): внешний периметр — только
+# frontend и bff. CORS — забота внешнего периметра, здесь не нужен.
+ingress:
+  enabled: false
 
 cors:
-  enabled: true
+  enabled: false
 
 networkPolicy:
   enabled: true
+  # Кто именно имеет право ходить в сервис. Список, а не «весь namespace»:
+  # namespace из пяти подов — это не граница (ADR 0006).
+  allowFrom:
+    - app.kubernetes.io/name: bff
+
+# podSecurityContext и securityContext здесь НЕ переопределяются: дефолты
+# чарта (runAsNonRoot, runAsUser/runAsGroup/fsGroup 65532,
+# seccompProfile RuntimeDefault, allowPrivilegeEscalation: false,
+# readOnlyRootFilesystem: true, capabilities drop ALL) — то, на чём идут
+# service-auth, service-core и service-commission. Своё значение runAsUser
+# задают только bff (1000) и frontend (101), и ровно потому, что их образы
+# собраны под другим uid. Не выдумывай uid новому сервису: если образ
+# требует иного, поставь именно его, иначе оставь дефолт.
+#
+# runAsUser не может быть пустым: без него kubelet не стартует контейнер
+# под runAsNonRoot, если образ не объявляет числовой USER. Рендер чарта
+# падает, если runAsNonRoot: true стоит без runAsUser.
+
+# Drogon при старте создаёт ./uploads/tmp/00 … FF относительно cwd; с
+# read-only корнем без этого тома он печатает 256 строк ERROR на рестарт.
+extraVolumes:
+  - name: uploads
+    emptyDir: {}
+extraVolumeMounts:
+  - name: uploads
+    mountPath: /app/uploads
 
 healthcheck:
   path: /health
@@ -298,20 +343,47 @@ service-<name>` генерирует `infra/helm/generated/migrations-service-<n
 Makefile (`k3s-deploy-%`) и `.github/workflows/deploy.yml` передают его как дополнительный `-f`
 при `helm upgrade`.
 
-## 10. Регистрация в Makefile
+## 10. Регистрация в `infra/services.tsv`
 
-В `K3S_SERVICES` добавь имя:
-```makefile
-K3S_SERVICES := service-auth service-core service-commission service-<name>
+**Makefile и `deploy.yml` править не надо.** Список сервисов, порядок выката и
+свойства каждого сервиса живут в одном файле — `infra/services.tsv`. Его
+читают все три механизма: k3s-цели Makefile, `deploy.yml` (матрица сборки и
+цикл выката) и джоба `helm` в `ci.yml`. Второй список — это второй источник
+правды, который разъедется при первой же правке.
+
+Добавь строку (колонки описаны в шапке файла):
+
+```
+service-<name>        yes    yes       yes         sha                 DB_PASSWORD_<NAME>
 ```
 
-В `k3s-deploy-data` добавь PG:
-```makefile
-helm upgrade --install pg-<name> oci://registry-1.docker.io/bitnamicharts/postgresql \
-    -n data \
-    --set auth.username=<name> --set auth.password=<name> --set auth.database=<name> \
-    --set primary.persistence.size=1Gi
+- `build=yes` — Dockerfile лежит здесь; `cpp-base=yes` — сборка идёт от
+  `ivr-cpp-base`;
+- `migrations=yes` — есть `services/service-<name>/migrations`;
+- `sha` — тег образа считается из коммита Backend;
+- `DB_PASSWORD_<NAME>` — имя переменной с паролем БД.
+
+**Место строки — это порядок выката.** Новый сервис ставь среди
+`service-*`, до `bff`: bff падает при старте, если недоступен auth, а
+frontend — если недоступен bff (README, «Порядок выката»). Если твой сервис
+на старте ходит в кого-то по сети, его место определяется этим, а не
+алфавитом.
+
+PG для него поднимется сам: `k3s-deploy-data` идёт по строкам с
+`migrations=yes` и берёт пароль из той же переменной. **Отдельный блок
+`helm upgrade --install pg-<name> … --set auth.password=<name>` дописывать
+не надо и нельзя** — литеральный пароль в цели и был той самой второй
+точкой правды, из-за которой чарт и база расходились молча.
+
+Пароль создаётся один раз:
+
+```bash
+make k3s-secrets    # допишет DB_PASSWORD_<NAME> в infra/helm/secrets-k3s.env
 ```
+
+Файл в git не попадает. В CD заведи одноимённый secret репозитория.
+Генерируется пароль из `[A-Za-z0-9]`: `openssl rand -base64` даёт `/`,
+который гвард userinfo отвергает (ADR 0007).
 
 В корневой `CMakeLists.txt` добавь:
 ```cmake

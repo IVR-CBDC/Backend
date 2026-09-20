@@ -9,25 +9,83 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  build-and-push:
+  # ============================================================
+  # plan: читает infra/services.tsv и превращает его в то, чем дальше
+  # пользуются остальные джобы. Список сервисов существует в ОДНОМ месте —
+  # шестой сервис добавляется строкой в tsv, а не правкой пяти блоков здесь
+  # и ещё трёх переменных в Makefile.
+  # ============================================================
+  plan:
     runs-on: ubuntu-latest
+    outputs:
+      # JSON-массив для matrix: только те сервисы, чей образ собирается в
+      # этом репозитории (build=yes). bff и frontend собирает CI
+      # alfa-cbdc-hub, здесь они только выкатываются.
+      images: ${{ steps.plan.outputs.images }}
+      sha-tag: ${{ steps.plan.outputs.sha-tag }}
+      repo-lc: ${{ steps.plan.outputs.repo-lc }}
+      built-at: ${{ steps.plan.outputs.built-at }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: plan
+        run: |
+          set -euo pipefail
+          rows() { awk '!/^[[:space:]]*#/ && NF' infra/services.tsv; }
+
+          images=$(rows | awk '$2=="yes" {
+            printf "%s{\"name\":\"%s\",\"cppBase\":\"%s\"}", sep, $1, $3; sep=","
+          }')
+          echo "images=[$images]" >> "$GITHUB_OUTPUT"
+
+          # Тег считается ОДИН раз и здесь, а не вытаскивается из
+          # docker/metadata-action через labels['org.opencontainers.image.version'] —
+          # тот путь ломался бы молча при любой смене формата меток, а от тега
+          # зависит, какой образ вообще поедет на стенд. Формат тот же, что
+          # давал `type=sha,format=short`: sha-<7 символов>.
+          echo "sha-tag=sha-$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+          # ghcr требует lowercase в имени пакета. github.repository хранит
+          # регистр как он заведён на GitHub — сейчас нижний, но это не
+          # гарантия на будущее (переименование организации, форк с
+          # CamelCase-именем), а чинить постфактум для уже запушенных тегов
+          # сложнее, чем один раз привести явно.
+          echo "repo-lc=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+          # Один момент времени на все образы прогона: иначе
+          # org.opencontainers.image.created у auth и core отличался бы на
+          # время сборки и перестал бы означать «собрано из этого коммита».
+          echo "built-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Показать план
+        run: |
+          echo "образы: ${{ steps.plan.outputs.images }}"
+          echo "тег:    ${{ steps.plan.outputs.sha-tag }}"
+          echo "порядок выката (строки infra/services.tsv):"
+          awk '!/^[[:space:]]*#/ && NF {print "  " ++i ". " $1}' infra/services.tsv
+
+  # ============================================================
+  # cpp-base: общий базовый образ (drogon/libjwt) для auth и core.
+  # Пересобирается на каждый деплой, но благодаря cache-from/cache-to
+  # type=gha это дёшево (сборка drogon с нуля ~15-19 минут, из кэша —
+  # секунды). Пересобирать только при изменении cpp-base.Dockerfile через
+  # dorny/paths-filter намеренно не стали: это лишний движущийся шаг ради
+  # экономии, которую и так даёт кэш слоёв, а безусловная пересборка
+  # гарантирует, что ghcr всегда содержит актуальный ivr-cpp-base.
+  #
+  # F5 (ревью плана 04): база тоже получает тег :${{ github.sha }}, и именно
+  # его сервисы передают в BASE_IMAGE. Пока база была только :latest, образ
+  # сервиса с тегом sha через месяц пересобрался бы на другой базе, а два
+  # одновременных деплоя main дрались бы за один тег.
+  # ============================================================
+  cpp-base:
+    runs-on: ubuntu-latest
+    needs: plan
     permissions:
       contents: read
-      packages: write # Нужно для пуша в GitHub Packages
-
+      packages: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # F8 (final review): ghcr требует lowercase в имени пакета.
-      # github.repository сохраняет регистр владельца/репозитория как он
-      # заведён на GitHub — сейчас он и так нижний, но это не гарантия на
-      # будущее (переименование организации, форк с CamelCase-именем), а
-      # чинить постфактум для уже запушенных тегов сложнее, чем один раз
-      # привести явно.
-      - name: Lowercase repository name for ghcr
-        id: repo
-        run: echo "lc=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
@@ -38,24 +96,6 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      # --- Общий базовый образ (drogon/libjwt) для auth и core ---
-      # Пересобирается на каждый деплой, но благодаря cache-from/cache-to
-      # type=gha это дёшево (см. Task 1/4: сама сборка drogon с нуля ~15-19
-      # минут, из кэша — секунды). Пересобирать только при изменении
-      # cpp-base.Dockerfile через dorny/paths-filter намеренно не стали:
-      # это лишний движущийся шаг (обнаружение изменений, отдельный тег
-      # образа для пропущенных случаев) ради экономии, которую и так даёт
-      # кэш слоёв — а безусловная пересборка гарантирует, что ghcr всегда
-      # содержит актуальный ivr-cpp-base, даже если кто-то поменяет базовый
-      # Dockerfile в том же PR, где меняются и сервисы.
-      #
-      # F5 (final review): раньше база пушилась только как :latest, а
-      # BASE_IMAGE сервисов ссылался на :latest — значит образ сервиса с
-      # тегом sha через месяц пересобрался бы на другой (более новой) базе,
-      # и два одновременных деплоя main дрались бы за один и тот же тег
-      # :latest. Теперь база тоже получает тег :${{ github.sha }}, и именно
-      # его сервисы передают в BASE_IMAGE — так тег сервиса детерминированно
-      # фиксирует, с какой версией базы он собран.
       - name: Build and push ivr-cpp-base
         uses: docker/build-push-action@v5
         with:
@@ -63,87 +103,177 @@ jobs:
           file: infra/docker/cpp-base.Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/ivr-cpp-base:latest
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/ivr-cpp-base:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}/ivr-cpp-base:latest
+            ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}/ivr-cpp-base:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ needs.plan.outputs.built-at }}
+            org.opencontainers.image.title=ivr-cpp-base
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # --- Сборка и пуш Auth Service ---
-      - name: Extract metadata for auth
-        id: meta-auth
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/service-auth
-          tags: |
-            type=sha,format=short
-
-      - name: Build and push service-auth
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: services/service-auth/Dockerfile
-          push: true
-          tags: ${{ steps.meta-auth.outputs.tags }}
-          labels: ${{ steps.meta-auth.outputs.labels }}
-          build-args: |
-            BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/ivr-cpp-base:${{ github.sha }}
-
-      # --- Сборка и пуш Core Service ---
-      - name: Extract metadata for core
-        id: meta-core
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/service-core
-          tags: |
-            type=sha,format=short
-
-      - name: Build and push service-core
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: services/service-core/Dockerfile
-          push: true
-          tags: ${{ steps.meta-core.outputs.tags }}
-          labels: ${{ steps.meta-core.outputs.labels }}
-          build-args: |
-            BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/ivr-cpp-base:${{ github.sha }}
-
-      # --- Сборка и пуш Commission Service ---
-      - name: Extract metadata for commission
-        id: meta-commission
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.lc }}/service-commission
-          tags: |
-            type=sha,format=short
-
-      - name: Build and push service-commission
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: services/service-commission/Dockerfile
-          push: true
-          tags: ${{ steps.meta-commission.outputs.tags }}
-          labels: ${{ steps.meta-commission.outputs.labels }}
-
-    outputs:
-      tag: ${{ fromJSON(steps.meta-auth.outputs.json).labels['org.opencontainers.image.version'] }} # берем sha тег
-      repo-lc: ${{ steps.repo.outputs.lc }}
-
-  deploy:
-    needs: build-and-push
+  # ============================================================
+  # images: матрица вместо трёх скопированных пар шагов. Порядок сборки
+  # здесь не важен (образы друг от друга не зависят), поэтому матрица
+  # параллельная — в отличие от выката ниже.
+  #
+  # Публикация backend-образов на main нужна не только выкату: CI фронта
+  # (alfa-cbdc-hub) тянет их вместо пересборки C++ на каждом PR — долг из
+  # плана 07.
+  # ============================================================
+  images:
     runs-on: ubuntu-latest
+    needs: [plan, cpp-base]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: ${{ fromJSON(needs.plan.outputs.images) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push ${{ matrix.service.name }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/${{ matrix.service.name }}/Dockerfile
+          push: true
+          # Два тега. sha-<7> — то, чем выкатывается стенд: он фиксирует
+          # содержимое, и именно его подставляет deploy.
+          # :${{ github.ref_name }} (на этом workflow — всегда `main`) —
+          # плавающий тег для CI фронт-репозитория: тот тянет backend-образы
+          # вместо пересборки C++ на каждом PR (долг плана 07), но sha
+          # Backend не знает и знать не может. Выкат этим тегом НЕ
+          # пользуется: `helm upgrade` с неизменившимся тегом был бы no-op.
+          tags: |
+            ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}/${{ matrix.service.name }}:${{ needs.plan.outputs.sha-tag }}
+            ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}/${{ matrix.service.name }}:${{ github.ref_name }}
+          # OCI-метки. Без image.source пакет в ghcr не связывается с
+          # репозиторием: в интерфейсе он висит сиротой, и по образу из
+          # кластера нельзя дойти до коммита, из которого он собран.
+          # Раньше их проставлял docker/metadata-action; после перехода на
+          # явные теги метки пропали вместе с ним.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.sha-tag }}
+            org.opencontainers.image.created=${{ needs.plan.outputs.built-at }}
+            org.opencontainers.image.title=${{ matrix.service.name }}
+          # BASE_IMAGE передаётся только тем, у кого в services.tsv
+          # cpp-base=yes: у service-commission такого build-arg в Dockerfile
+          # нет, и безусловная передача давала бы предупреждение buildkit на
+          # каждой сборке.
+          build-args: ${{ matrix.service.cppBase == 'yes' && format('BASE_IMAGE={0}/{1}/ivr-cpp-base:{2}', env.REGISTRY, needs.plan.outputs.repo-lc, github.sha) || '' }}
+
+  # ============================================================
+  # deploy: один цикл по infra/services.tsv вместо пяти блоков helm upgrade.
+  #
+  # ПОЧЕМУ ЗДЕСЬ ЦИКЛ, А НЕ MATRIX. Порядок выката обязателен:
+  #   * bff тянет публичный ключ auth ДО того, как поднимет сервер, и без
+  #     живого auth падает на старте (разделение /health и /ready не
+  #     спасает — до проб дело не доходит);
+  #   * frontend (nginx) резолвит имя `bff` при разборе конфига и без пода
+  #     bff падает с `[emerg] host not found in upstream "bff"`.
+  # GitHub Actions не гарантирует порядок выполнения элементов матрицы даже
+  # при max-parallel: 1 — это нигде не обещано и менялось между версиями
+  # рантайма. Ставить корректность выката на недокументированное поведение
+  # нельзя, поэтому порядок задаётся порядком строк файла, а `set -e`
+  # обрывает цикл на первой же неудаче. Цель «шестой сервис = одна строка»
+  # при этом сохраняется: цикл читает тот же tsv, что и матрица сборки.
+  #
+  # --wait здесь не косметика: без него helm возвращается сразу, и
+  # последовательность перестала бы что-либо означать.
+  # ============================================================
+  deploy:
+    needs: [plan, images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Единственная доступная отсюда защита от класса ошибок «путь образа
+      # никто не проверял»: репозиторий bff и frontend задан в values Task 2
+      # и до первого dispatch из alfa-cbdc-hub ничем не подтверждён.
+      # ImagePullBackOff посреди выката дороже отказа до его начала: часть
+      # релизов уже обновлена, часть нет, а порядок auth → bff → frontend
+      # означает, что упасть может именно фронт — последним.
+      #
+      # Проверка живёт на раннере, а не на сервере выката: здесь есть docker
+      # и выполнен login в ghcr. На сервере k3s работает через containerd, и
+      # docker там может отсутствовать вовсе.
+      - name: Pre-flight — образы существуют в реестре
+        env:
+          SHA_TAG: ${{ needs.plan.outputs.sha-tag }}
+          IMAGE_PREFIX: ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}
+        run: |
+          set -euo pipefail
+
+          # ПЕРВОЙ — проверка неизменяемости тега, и порядок здесь
+          # содержательный. Пока в frontend-tags.env стоит заглушка
+          # `latest`, образа с таким тегом в реестре нет, и без этой
+          # проверки первым красным сообщением прогона было бы «образа нет
+          # или он недоступен этому токену» — человек ушёл бы разбираться с
+          # правами ghcr, хотя причина в том, что dispatch из
+          # alfa-cbdc-hub ещё не приходил. Объяснение живёт в скрипте, и
+          # прогон обязан до него дойти.
+          sh infra/k3s-preflight.sh --tags-only infra/services.tsv
+
+          . ./infra/helm/frontend-tags.env
+          awk '!/^[[:space:]]*#/ && NF' infra/services.tsv > /tmp/rows
+          fail=0
+          while read -r name build cppbase mig tagsrc pwvar; do
+            if [ "$tagsrc" = sha ]; then
+              ref="$IMAGE_PREFIX/$name:$SHA_TAG"
+            else
+              eval "tag=\${$tagsrc-}"
+              # repository для bff и frontend задан в values, а не здесь:
+              # читаем оттуда же, откуда его возьмёт helm.
+              repo=$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["image"]["repository"])' \
+                     "infra/helm/values-${name}.yaml")
+              ref="$repo:$tag"
+            fi
+            if docker manifest inspect "$ref" > /dev/null 2>&1; then
+              echo "ok   $name -> $ref"
+            else
+              echo "::error::$name: образа $ref нет в реестре или он недоступен этому токену"
+              fail=1
+            fi
+          done < /tmp/rows
+          [ "$fail" -eq 0 ]
+
       - name: Generate migration values
         run: |
-          for s in service-auth service-core service-commission; do
-            bash infra/gen-migration-values.sh "$s"
-          done
+          set -euo pipefail
+          awk '!/^[[:space:]]*#/ && NF && $4=="yes" {print $1}' infra/services.tsv \
+          | while read -r s; do
+              bash infra/gen-migration-values.sh "$s"
+            done
 
-      # Копируем папку helm на сервер, чтобы применить свежие манифесты
+      # Копируем чарт и список сервисов на сервер. services.tsv едет рядом:
+      # скрипт выката ниже читает именно его, а не второй список внутри
+      # workflow.
       - name: Copy Helm charts to server
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -151,44 +281,92 @@ jobs:
           port: 27373
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          source: "infra/helm"
+          source: "infra/helm,infra/services.tsv,infra/k3s-preflight.sh"
           target: "~/deploy-ivr"
 
       - name: Deploy to k3s via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          # Пароли БД. Задаются в Settings → Secrets and variables → Actions
+          # репозитория. Имена переменных перечислены в последней колонке
+          # infra/services.tsv — там же, где их читает цикл ниже.
+          #
+          # ВАЖНО: это должен быть ТОТ ЖЕ пароль, что у соответствующего
+          # Postgres в namespace data. Чарт сервиса кладёт в Secret то, что
+          # ему передали, и не имеет способа узнать, что в базе. Разойдутся —
+          # рендер идеален, а под получает password authentication failed.
+          # Процедура заведения и ротации — README, «Секреты в k3s».
+          #
+          # Набор символов пароля ограничен: он попадает в userinfo DSN
+          # service-commission, и гвард чарта отвергает всё, что там требует
+          # процент-кодирования. Генерировать `openssl rand -base64` нельзя —
+          # он выдаёт `/`. См. README.
+          DB_PASSWORD_AUTH: ${{ secrets.DB_PASSWORD_AUTH }}
+          DB_PASSWORD_CORE: ${{ secrets.DB_PASSWORD_CORE }}
+          DB_PASSWORD_COMMISSION: ${{ secrets.DB_PASSWORD_COMMISSION }}
+          SHA_TAG: ${{ needs.plan.outputs.sha-tag }}
+          IMAGE_PREFIX: ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           port: 27373
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          # Выполняем helm upgrade на сервере, передавая новые теги образов
+          envs: DB_PASSWORD_AUTH,DB_PASSWORD_CORE,DB_PASSWORD_COMMISSION,SHA_TAG,IMAGE_PREFIX
           script: |
+            set -eu
             export KUBECONFIG=~/.kube/config
             cd ~/deploy-ivr/infra/helm
-            
-            # Auth
-            helm upgrade --install service-auth ./generic-service --wait --timeout 5m \
-              -f values-service-auth.yaml \
-              -f generated/migrations-service-auth.yaml \
-              --set image.repository=${{ env.REGISTRY }}/${{ needs.build-and-push.outputs.repo-lc }}/service-auth \
-              --set image.tag=${{ needs.build-and-push.outputs.tag }} \
-              --set "imagePullSecrets[0].name=ghcr-secret" \
-              -n backend
 
-            # Core
-            helm upgrade --install service-core ./generic-service --wait --timeout 5m \
-              -f values-service-core.yaml \
-              -f generated/migrations-service-core.yaml \
-              --set image.repository=${{ env.REGISTRY }}/${{ needs.build-and-push.outputs.repo-lc }}/service-core \
-              --set image.tag=${{ needs.build-and-push.outputs.tag }} \
-              --set "imagePullSecrets[0].name=ghcr-secret" \
-              -n backend
+            # Теги образов фронт-репозитория. Файл обновляет CD alfa-cbdc-hub
+            # через repository_dispatch (спека §8) — деплой воспроизводим по
+            # git, а не по тому, что сейчас лежит под :latest.
+            . ./frontend-tags.env
 
-            # Commission
-            helm upgrade --install service-commission ./generic-service --wait --timeout 5m \
-              -f values-service-commission.yaml \
-              -f generated/migrations-service-commission.yaml \
-              --set image.repository=${{ env.REGISTRY }}/${{ needs.build-and-push.outputs.repo-lc }}/service-commission \
-              --set image.tag=${{ needs.build-and-push.outputs.tag }} \
-              --set "imagePullSecrets[0].name=ghcr-secret" \
-              -n backend
+            # ПЕРВЫЙ ПРОХОД — проверки по ВСЕМ строкам, до первого
+            # helm upgrade. Обрыв посреди цикла оставил бы стенд в смешанном
+            # состоянии: auth уже обновлён, остальные нет. Тот же скрипт
+            # вызывает Makefile — два набора проверок разъехались бы так же
+            # молча, как разъезжались два списка сервисов.
+            #
+            # Скрипт проверяет: заданы ли пароли, не является ли тег
+            # bff/frontend неизменяемым (`latest` — no-op выката, хуже
+            # пустого тега) и совпадает ли пароль с тем, что лежит в Secret
+            # pg-<short>-postgresql (расхождение = password authentication
+            # failed ПОСЛЕ успешного выката).
+            sh ~/deploy-ivr/infra/k3s-preflight.sh ~/deploy-ivr/infra/services.tsv
+
+            # ВТОРОЙ ПРОХОД — собственно выкат.
+            # Список кладётся в файл, а не подаётся в цикл конвейером: тело
+            # цикла в конвейере выполняется в подоболочке, и `exit 1` из
+            # него оборвал бы только её, а не выкат.
+            awk '!/^[[:space:]]*#/ && NF' ../services.tsv > ~/deploy-ivr/.deploy-list
+
+            while read -r name build cppbase mig tagsrc pwvar; do
+              set -- -f "values-$name.yaml"
+
+              if [ "$mig" = yes ]; then
+                set -- "$@" -f "generated/migrations-$name.yaml"
+              fi
+
+              if [ "$tagsrc" = sha ]; then
+                set -- "$@" --set-string "image.repository=$IMAGE_PREFIX/$name" \
+                            --set-string "image.tag=$SHA_TAG"
+              else
+                # repository для bff и frontend задан в values (ghcr фронта),
+                # здесь переопределяется только тег. Непустоту и
+                # неизменяемость тега проверил первый проход.
+                eval "tag=\${$tagsrc-}"
+                set -- "$@" --set-string "image.tag=$tag"
+              fi
+
+              if [ "$pwvar" != "-" ]; then
+                eval "pw=\${$pwvar-}"
+                set -- "$@" --set-string "secrets.data.dbPassword=$pw"
+              fi
+
+              echo "=== helm upgrade $name ==="
+              helm upgrade --install "$name" ./generic-service --wait --timeout 5m \
+                "$@" \
+                --set "imagePullSecrets[0].name=ghcr-secret" \
+                -n backend
+            done < ~/deploy-ivr/.deploy-list

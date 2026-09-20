@@ -1,0 +1,30 @@
+# Оверлей: включает дашборд Traefik и публикует служебный entryPoint наружу.
+#
+# По умолчанию (план 08) дашборд выключен и порт 8080 контейнера наружу не
+# идёт: ingress-контроллер сам не входит в список того, что публикуется
+# (спека §3 — наружу только frontend и bff). Но на защите дашборд полезен,
+# поэтому он живёт здесь, а не в docker-compose.yml.
+#
+# Включается ПОДМЕНОЙ статического конфига, а не флагом командной строки:
+# с `--configFile` Traefik игнорирует CLI-флаги, и `--api.insecure=true`
+# в команде контейнера не даёт ничего (дашборд остаётся 404 — проверено).
+# Поэтому оверлей монтирует infra/traefik/traefik.dashboard.yml поверх
+# того же пути /etc/traefik/traefik.yml.
+#
+# Использование:
+#   docker compose -f docker-compose.yml -f docker-compose.dashboard.yml up -d traefik
+#   открыть http://127.0.0.1:8081/dashboard/
+#
+# ВНИМАНИЕ: на этой машине порт 8081 бывает занят посторонним процессом —
+# тогда переопределите TRAEFIK_DASHBOARD_PORT:
+#   TRAEFIK_DASHBOARD_PORT=18082 docker compose -f ... up -d traefik
+#
+# Дашборд без аутентификации, поэтому порт привязан к 127.0.0.1, а не к
+# 0.0.0.0. В k3s этот оверлей не используется вообще.
+
+services:
+  traefik:
+    volumes:
+      - ./infra/traefik/traefik.dashboard.yml:/etc/traefik/traefik.yml:ro
+    ports:
+      - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-8081}:8080"

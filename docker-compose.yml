@@ -25,16 +25,40 @@ services:
   # ============================================================
   # Ingress
   # ============================================================
+  # План 08: наружу через Traefik публикуются только frontend (`/`) и bff
+  # (`/api`, `/ws`) — см. infra/traefik/dynamic.yml и спеку §3. Прямых
+  # маршрутов к auth/core/commission больше нет.
+  #
+  # bff и frontend живут под профилями (ниже) и обычным `make up` не
+  # поднимаются. Traefik от этого не падает: file-провайдер загружает
+  # роутеры и сервисы независимо от доступности бэкенда, недоступный
+  # upstream даёт 502 на запрос, а не ошибку старта (проверено локально,
+  # см. отчёт task-1 плана 08).
   traefik:
     image: traefik:v2.10
     command:
       - --configFile=/etc/traefik/traefik.yml
+    environment:
+      # Список источников для CORS-middleware. dynamic.yml — Go-шаблон
+      # file-провайдера, он читает эту переменную. Звёздочка запрещена
+      # (сессия в cookie, спека §3.1); дефолт — адреса локального стенда.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1,http://127.0.0.1:8090,http://localhost:5173}
     ports:
+      # Только web. Служебный entryPoint :8080 (ping, дашборд) наружу не
+      # публикуется: ingress-контроллер сам не должен торчать наружу
+      # (спека §3). Дашборд — через docker-compose.dashboard.yml.
       - "80:80"
-      - "8081:8080"
     volumes:
       - ./infra/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./infra/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    healthcheck:
+      # ping-энтрипоинт включён в infra/traefik/traefik.yml; `traefik
+      # healthcheck` ходит в него внутри контейнера.
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
     networks: [backend-net]
 
   # ============================================================
@@ -147,7 +171,22 @@ services:
   # ============================================================
   # Сервисы
   # ============================================================
+  # План 08, Task 4: у трёх собираемых здесь сервисов появилось явное имя
+  # образа. Два следствия, оба нужны.
+  #
+  # 1. Локально имя перестало быть производным от имени проекта
+  #    (`ivr-service-auth`) — его больше не поменяет переименование каталога.
+  # 2. CI фронт-репозитория (alfa-cbdc-hub, джоба e2e) подставляет сюда
+  #    опубликованные ghcr-образы и поднимает стенд БЕЗ `--build`: сборка
+  #    service-auth/service-core — это полный cmake поверх ivr-cpp-base,
+  #    ~25-40 минут на чистом раннере, и платить их на каждый PR фронта
+  #    незачем (долг плана 07). Тег там плавающий `:main` — sha коммита
+  #    Backend фронтовому CI неизвестен и известен быть не может. Для
+  #    ВЫКАТА плавающий тег запрещён (infra/k3s-preflight.sh), но здесь
+  #    речь про эфемерный стенд одной джобы, а не про воспроизводимость
+  #    релиза.
   service-auth:
+    image: ${SERVICE_AUTH_IMAGE:-ivr-service-auth:local}
     build:
       context: .
       dockerfile: services/service-auth/Dockerfile
@@ -176,6 +215,7 @@ services:
     networks: [backend-net]
 
   service-core:
+    image: ${SERVICE_CORE_IMAGE:-ivr-service-core:local}
     build:
       context: .
       dockerfile: services/service-core/Dockerfile
@@ -192,6 +232,12 @@ services:
       COMMISSION_URL: "http://service-commission:8000"
       EMULATOR_ENABLED: "true"
       EMULATOR_SPEED: demo
+      # Ручной режим эмулятора включается ОВЕРЛЕЕМ docker-compose.e2e.yml, а
+      # не этой переменной (план 08, Task 4 — там же объяснение, почему
+      # префикс команды был ловушкой). Переменная оставлена как аварийный
+      # рычаг для одиночной ручной команды; штатный путь — `-f
+      # docker-compose.e2e.yml`, и именно его используют `make e2e-stand-up`
+      # и `make test-api`.
       EMULATOR_MANUAL: "${EMULATOR_MANUAL:-false}"
     volumes:
       - ./infra/keys/jwt_public.jwk:/etc/keys/jwt_public.jwk:ro
@@ -209,6 +255,7 @@ services:
     networks: [backend-net]
 
   service-commission:
+    image: ${SERVICE_COMMISSION_IMAGE:-ivr-service-commission:local}
     build:
       context: .
       dockerfile: services/service-commission/Dockerfile
@@ -244,7 +291,11 @@ services:
   # задокументированное поведение docker compose, проверено локально
   # (см. отчёт). Для локальной сборки из ../alfa-cbdc-hub по-прежнему
   # нужен docker-compose.override.yml.example — он не изменился.
-  # Traefik сюда пока не смотрит — внешняя маршрутизация BFF это план 08.
+  #
+  # План 08: Traefik теперь маршрутизирует сюда `/api` и `/ws` (роутер `bff`,
+  # priority 100 — см. infra/traefik/dynamic.yml). Профиль остаётся: без
+  # `--profile bff` сервис не поднимается, и это нормально — Traefik от
+  # недоступного upstream не падает, запрос просто получает 502.
   # ============================================================
   bff:
     image: ${BFF_IMAGE:-ghcr.io/ivr-cbdc/frontend/bff:latest}
@@ -260,7 +311,11 @@ services:
       # переменную окружения — этот дефолт остаётся рабочим для локального
       # стенда без Traefik.
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost}
-      COOKIE_SECURE: "false"
+      # План 08, Global Constraints: COOKIE_SECURE — параметр, а не литерал.
+      # Дефолт `false`, потому что локальный стенд ходит по http, и cookie с
+      # Secure до браузера просто не доедет. За TLS поднимают стенд с
+      # COOKIE_SECURE=true, не правя этот файл.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     depends_on:
       service-auth: { condition: service_healthy }
       service-core: { condition: service_healthy }
@@ -287,8 +342,11 @@ services:
   # публиковал, поэтому сервис под своим профилем — обычный `make up` его
   # не трогает и не пытается тянуть несуществующий образ. Для локальной
   # сборки из ../alfa-cbdc-hub — свой блок в
-  # docker-compose.override.yml.example (frontend/Dockerfile). Traefik
-  # сюда пока не смотрит — внешняя маршрутизация это план 08.
+  # docker-compose.override.yml.example (frontend/Dockerfile).
+  #
+  # План 08: Traefik отдаёт сюда всё остальное — роутер `frontend`,
+  # `PathPrefix(/)` с priority 1 (явно ниже bff, иначе `/` перехватил бы
+  # `/api`). Upstream — порт 8080: nginxinc/nginx-unprivileged.
   # ============================================================
   frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/ivr-cbdc/frontend/spa:latest}

@@ -105,13 +105,23 @@ Task<> CoreController::chooseScenario(HttpRequestPtr req, std::function<void(con
     mutation.commission_breakdown = it->breakdown;
 
     auto result = co_await DealRepository::apply(id, company_id, version, transition, mutation);
-    if (result.status == ApplyResult::Status::not_found) {
-      cb(jsonError(k404NotFound, "NOT_FOUND", "Сделка не найдена"));
-      co_return;
-    }
-    if (result.status == ApplyResult::Status::version_conflict) {
-      cb(jsonError(k409Conflict, "VERSION_CONFLICT", "Сделка изменилась, обновите страницу"));
-      co_return;
+    // switch без `default` — намеренно (и CMakeLists ставит -Werror=switch):
+    // новый статус в ApplyResult не должен молча проваливаться мимо и
+    // доходить до `*result.deal`, который на неуспешных ветках пуст.
+    switch (result.status) {
+      case ApplyResult::Status::not_found:
+        cb(jsonError(k404NotFound, "NOT_FOUND", "Сделка не найдена"));
+        co_return;
+      case ApplyResult::Status::version_conflict:
+        cb(jsonError(k409Conflict, "VERSION_CONFLICT", "Сделка изменилась, обновите страницу"));
+        co_return;
+      case ApplyResult::Status::commit_failed:
+        // COMMIT не прошёл — сценарий и комиссия не сохранились; 200 здесь
+        // означал бы «выбрали» на сделке, которая в базе осталась прежней.
+        cb(jsonError(k500InternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервиса"));
+        co_return;
+      case ApplyResult::Status::ok:
+        break;
     }
 
     Json::Value out;

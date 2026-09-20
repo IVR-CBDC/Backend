@@ -7,8 +7,11 @@ image:
 service:
   port: 8080
 
+# config.json содержит пароль БД (db_clients[].passwd), поэтому едет Secret'ом,
+# а не ConfigMap (план 08).
 config:
   enabled: true
+  secret: true
   json:
     app:
       threads_num: 2
@@ -25,7 +28,13 @@ config:
         port: 5432
         dbname: auth
         user: auth
-        passwd: auth
+        # Пароль не литерал: подставляется из Secret релиза при рендере.
+        # Обратные кавычки обязательны — см. комментарий к config.json в
+        # values чарта (toPrettyJson экранировал бы двойные).
+        # jsonEscape обязателен: подстановка попадает внутрь кавычек, которые
+        # поставил toPrettyJson, и пароль с двойной кавычкой без него разорвал
+        # бы JSON — Drogon получил бы битый конфиг и не стартовал.
+        passwd: "{{ required `secrets.data.dbPassword обязателен для service-auth: передайте --set secrets.data.dbPassword=... (CD) или -f файлом вне git` .Values.secrets.data.dbPassword | include `generic-service.jsonEscape` }}"
         is_fast: false
         connection_number: 4
 
@@ -49,17 +58,56 @@ migrations:
     port: "5432"
     name: auth
     user: auth
-    password: auth
+    passwordSecretKey: dbPassword
 
-ingress:
+# Значения секретов в репозиторий не коммитятся: `secrets.data` наполняется
+# из CD через `--set secrets.data.dbPassword=...` или файлом вне git. Здесь —
+# только факт «у этого релиза есть Secret».
+#
+# В compose пароль остаётся открытым (`auth`) намеренно: это локальный стенд,
+# решение записано в README. Secret — про k3s.
+# Ключ объявлен пустым, а не отсутствует: так имя ключа видно в файле (на
+# него ссылаются и config.json, и migrations.db.passwordSecretKey), а забытый
+# `--set` роняет рендер с сообщением про пустое значение, а не про
+# отсутствующий ключ.
+secrets:
   enabled: true
-  match: "PathPrefix(`/api/auth`)"
+  data:
+    dbPassword: ""
+
+# План 08 / спека §3: наружу service-auth не публикуется — к нему ходит
+# только BFF внутри кластера. IngressRoute и CORS-middleware здесь не
+# нужны совсем (CORS — забота внешнего периметра, а он теперь у bff).
+ingress:
+  enabled: false
 
 cors:
-  enabled: true
+  enabled: false
 
 networkPolicy:
   enabled: true
+  # ВНИМАНИЕ: под `bff` появляется в кластере только с values-bff.yaml
+  # (Task 2 плана 08). До этого политика закрывает сервис для всех —
+  # Task 1 нельзя выкатывать в k3s в одиночку.
+  # Источник ищется в том же namespace (networkPolicy.namespace: "" в
+  # values чарта) — bff обязан жить в `backend` вместе с сервисами.
+  allowFrom:
+    - app.kubernetes.io/name: bff
 
 healthcheck:
   path: /health
+
+# Drogon при старте создаёт дерево временных каталогов для загрузок
+# относительно cwd (/app): ./uploads/tmp/00 … ./uploads/tmp/FF. С read-only
+# корнем это не фатально — сервис поднимается и отдаёт /health 200 (проверено
+# ревьюером запуском под `--read-only`), — но печатает 256 строк
+# `ERROR Error 30 creating path ./uploads/tmp/XX/: Read-only file system`
+# при каждом рестарте. Лог, в котором 256 строк ERROR — это норма, перестаёт
+# работать как лог. emptyDir дешевле, чем приучать себя их не замечать:
+# загрузки файлов в сервисе нет, состояния в каталоге не появляется.
+extraVolumes:
+  - name: uploads
+    emptyDir: {}
+extraVolumeMounts:
+  - name: uploads
+    mountPath: /app/uploads

@@ -14,6 +14,15 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   add_link_options(-fsanitize=address,undefined)
 endif()
 
+# -Wswitch приходит только вместе с -Wall, а -Wall тут стоит лишь в Debug —
+# и рабочая сборка (RelWithDebInfo, make test-cpp), и докерная (Release)
+# его не видят. Между тем `switch` по ApplyResult::Status в core/documents.cc
+# и core/scenario.cc намеренно написан без `default`: новый статус обязан
+# быть обработан явно, иначе управление провалится мимо switch к
+# `*result.deal`, который на неуспешных ветках пуст. Включаем проверку как
+# ошибку независимо от типа сборки — иначе защита была бы только на словах.
+add_compile_options(-Werror=switch)
+
 find_package(Drogon CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(PkgConfig REQUIRED)

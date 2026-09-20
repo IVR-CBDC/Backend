@@ -1,3 +1,40 @@
+{{- if and .Values.podSecurityContext.runAsNonRoot (not .Values.podSecurityContext.runAsUser) }}
+{{- fail "podSecurityContext.runAsNonRoot=true без runAsUser: ни один из образов платформы не объявляет ЧИСЛОВОГО USER (auth/core — вообще никакого, commission — нечисловой `app`), поэтому kubelet не может доказать, что процесс не root, и откажется стартовать контейнер. Задайте runAsUser явно." }}
+{{- end }}
+{{- /*
+  Сверка ссылок на ключи Secret'а с тем, что в Secret'е реально есть.
+
+  Без неё `--set secrets.data.pgDsn=...` без `dbPassword` рендерится
+  успешно, а init-контейнер ссылается на несуществующий ключ. Kubelet в этом
+  случае не падает при создании Deployment — он поднимает под и оставляет
+  его в CreateContainerConfigError, то есть ошибка вылезает уже на кластере
+  и выглядит как «под не стартует», а не как «забыли --set».
+*/ -}}
+{{- $data := .Values.secrets.data | default dict -}}
+{{- $derived := .Values.secrets.derived | default dict -}}
+{{- $inSecret := keys (merge (dict) $data $derived) | sortAlpha -}}
+{{- if .Values.migrations.enabled }}
+{{- $mk := required "migrations.enabled=true требует migrations.db.passwordSecretKey — имя ключа в Secret релиза. Пустое значение оставило бы init-контейнер с пустым DB_PASSWORD." .Values.migrations.db.passwordSecretKey }}
+{{- if not (has $mk $inSecret) }}
+{{- fail (printf "migrations.db.passwordSecretKey=%q, но ключа %q нет ни в secrets.data, ни в secrets.derived (есть: %v). Kubelet не ошибётся при apply — под встанет в CreateContainerConfigError. Передайте --set secrets.data.%s=... или исправьте имя ключа." $mk $mk $inSecret $mk) }}
+{{- end }}
+{{- end }}
+{{- range .Values.envSecret }}
+{{- include "generic-service.checkEnvName" (dict "name" .name "where" "envSecret") }}
+{{- $ek := required (printf "envSecret[%s].key обязателен: без ключа переменная молча приехала бы пустой" .name) .key }}
+{{- if not (has $ek $inSecret) }}
+{{- fail (printf "envSecret %q ссылается на ключ %q, которого нет ни в secrets.data, ни в secrets.derived (есть: %v). На кластере это CreateContainerConfigError, а не ошибка apply." .name $ek $inSecret) }}
+{{- end }}
+{{- end }}
+{{- range $name, $value := .Values.envMap }}
+{{- include "generic-service.checkEnvName" (dict "name" $name "where" "envMap") }}
+{{- end }}
+{{- range .Values.env }}
+{{- include "generic-service.checkEnvName" (dict "name" .name "where" "env") }}
+{{- end }}
+{{- if and (or .Values.envSecret .Values.migrations.enabled) (not .Values.secrets.enabled) }}
+{{- fail "есть ссылки на Secret релиза (envSecret или миграции), но secrets.enabled=false — Secret просто не отрендерится, и под встанет в CreateContainerConfigError." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,9 +50,26 @@ spec:
     metadata:
       labels:
         {{- include "generic-service.selectorLabels" . | nindent 8 }}
-      {{- if .Values.migrations.enabled }}
+      {{- if or .Values.migrations.enabled .Values.secrets.enabled .Values.config.enabled }}
+      # Перезапуск пода при смене того, что примонтировано или подставлено.
+      #
+      # Для config.json это не оптимизация, а единственный способ: он
+      # монтируется через subPath, а subPath-тома kubelet не обновляет
+      # ВООБЩЕ — без чексуммы под остался бы со старым паролем навсегда,
+      # даже после `helm upgrade`, и «ротация пароля» была бы ротацией
+      # только в Secret'е.
       annotations:
+        {{- if .Values.migrations.enabled }}
         checksum/migrations: {{ include (print $.Template.BasePath "/migrations-configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if .Values.secrets.enabled }}
+        # И сырые, и выводимые: смена пароля меняет data, правка шаблона
+        # DSN — derived, и то и другое обязано перезапускать под.
+        checksum/secrets: {{ dict "data" (.Values.secrets.data | default dict) "derived" (.Values.secrets.derived | default dict) | toYaml | sha256sum }}
+        {{- end }}
+        {{- if .Values.config.enabled }}
+        checksum/config: {{ tpl (.Values.config.json | toPrettyJson) . | sha256sum }}
+        {{- end }}
       {{- end }}
     spec:
       {{- if .Values.imagePullSecrets }}
@@ -23,6 +77,10 @@ spec:
         {{- toYaml .Values.imagePullSecrets | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "generic-service.fullname" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       dnsConfig:
         options:
           - name: use-vc
@@ -30,6 +88,10 @@ spec:
       initContainers:
         - name: migrate
           image: {{ .Values.migrations.image }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           command:
             - /bin/sh
             - -c
@@ -96,8 +158,15 @@ spec:
               value: {{ .Values.migrations.db.name | quote }}
             - name: DB_USER
               value: {{ .Values.migrations.db.user | quote }}
+            # Пароль миграций приходит из того же Secret, что и пароль
+            # сервиса. Литералом здесь его быть не должно: иначе секрет
+            # защищает половину пути, а вторая половина лежит в values и
+            # в `kubectl describe pod`.
             - name: DB_PASSWORD
-              value: {{ .Values.migrations.db.password | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "generic-service.fullname" . }}-secrets
+                  key: {{ required "migrations.enabled=true требует migrations.db.passwordSecretKey — имя ключа в Secret релиза. Пустое значение оставило бы init-контейнер с пустым DB_PASSWORD." .Values.migrations.db.passwordSecretKey }}
           volumeMounts:
             - name: migrations
               mountPath: /migrations
@@ -106,13 +175,36 @@ spec:
         - name: {{ include "generic-service.name" . }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - containerPort: {{ .Values.service.port }}
               protocol: TCP
-          {{- if .Values.env }}
+          {{- if or .Values.env .Values.envMap .Values.envSecret }}
           env:
-            {{- toYaml .Values.env | nindent 12 }}
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- /* quote обязателен: env в Kubernetes — всегда строка, а
+                   `--set envMap.COOKIE_SECURE=false` без него отрендерился бы
+                   YAML-булевым и был бы отвергнут API-сервером. */ -}}
+            {{- range $name, $value := .Values.envMap }}
+            - name: {{ $name }}
+              value: {{ $value | toString | quote }}
+            {{- end }}
+            {{- range .Values.envSecret }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "generic-service.fullname" $ }}-secrets
+                  key: {{ required (printf "envSecret[%s].key обязателен: без ключа переменная молча приехала бы пустой" .name) .key }}
+            {{- end }}
           {{- end }}
+          # liveness — только живость процесса; readiness — готовность.
+          # У BFF это разные ручки (/health и /ready, план 05): недоступный
+          # апстрим обязан снимать под с балансировки, а не перезапускать его.
           livenessProbe:
             httpGet:
               path: {{ .Values.healthcheck.path }}
@@ -121,7 +213,7 @@ spec:
             periodSeconds: {{ .Values.healthcheck.periodSeconds }}
           readinessProbe:
             httpGet:
-              path: {{ .Values.healthcheck.path }}
+              path: {{ .Values.healthcheck.readinessPath | default .Values.healthcheck.path }}
               port: {{ .Values.service.port }}
             initialDelaySeconds: 3
             periodSeconds: 5
@@ -144,11 +236,23 @@ spec:
               subPath: jwt_private.jwk
               readOnly: true
             {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- if .Values.config.enabled }}
         - name: config
+          {{- if .Values.config.secret }}
+          # config.json с паролем БД внутри — Secret, а не ConfigMap.
+          secret:
+            secretName: {{ include "generic-service.fullname" . }}-config
+          {{- else }}
           configMap:
             name: {{ include "generic-service.fullname" . }}-config
+          {{- end }}
         {{- end }}
         {{- if or .Values.jwtKeys.public .Values.jwtKeys.private }}
         - name: jwt-keys

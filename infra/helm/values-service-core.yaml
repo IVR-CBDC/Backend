@@ -7,8 +7,11 @@ image:
 service:
   port: 8080
 
+# config.json содержит пароль БД (db_clients[].passwd), поэтому едет Secret'ом,
+# а не ConfigMap (план 08).
 config:
   enabled: true
+  secret: true
   json:
     app:
       threads_num: 4
@@ -25,7 +28,12 @@ config:
         port: 5432
         dbname: core
         user: core
-        passwd: core
+        # Пароль не литерал: подставляется из Secret релиза при рендере.
+        # Обратные кавычки обязательны — см. комментарий к config.json в
+        # values чарта (toPrettyJson экранировал бы двойные).
+        # jsonEscape обязателен: подстановка попадает внутрь кавычек от
+        # toPrettyJson, и пароль с двойной кавычкой без него разорвал бы JSON.
+        passwd: "{{ required `secrets.data.dbPassword обязателен для service-core: передайте --set secrets.data.dbPassword=... (CD) или -f файлом вне git` .Values.secrets.data.dbPassword | include `generic-service.jsonEscape` }}"
         is_fast: false
         connection_number: 8
     redis_clients:
@@ -60,17 +68,50 @@ migrations:
     port: "5432"
     name: core
     user: core
-    password: core
+    passwordSecretKey: dbPassword
 
-ingress:
+# Значения секретов в репозиторий не коммитятся — приезжают из CD
+# (`--set secrets.data.dbPassword=...`) или файлом вне git. В compose пароль
+# остаётся открытым намеренно (локальный стенд, README).
+# Ключ объявлен пустым, а не отсутствует: имя ключа видно в файле (на него
+# ссылаются config.json и migrations.db.passwordSecretKey), а забытый `--set`
+# роняет рендер сообщением про пустое значение, а не про отсутствующий ключ.
+secrets:
   enabled: true
-  match: "PathPrefix(`/api/core`)"
+  data:
+    dbPassword: ""
+
+# План 08 / спека §3: наружу service-core не публикуется — к нему ходит
+# только BFF внутри кластера. Заодно это закрывает внутреннюю ручку
+# эмулятора POST /internal/emulator/tick (спека §4.3): в k3s она не
+# публикуется вообще, а NetworkPolicy ниже не пускает к ней никого,
+# кроме bff.
+ingress:
+  enabled: false
 
 cors:
-  enabled: true
+  enabled: false
 
 networkPolicy:
   enabled: true
+  # ВНИМАНИЕ: под `bff` появляется в кластере только с values-bff.yaml
+  # (Task 2 плана 08). До этого политика закрывает сервис для всех —
+  # Task 1 нельзя выкатывать в k3s в одиночку.
+  # Источник ищется в том же namespace (networkPolicy.namespace: "" в
+  # values чарта) — bff обязан жить в `backend` вместе с сервисами.
+  allowFrom:
+    - app.kubernetes.io/name: bff
 
 healthcheck:
   path: /health
+
+# То же, что у service-auth: Drogon создаёт ./uploads/tmp/00 … FF
+# относительно cwd (/app) при старте, и под read-only корнем это даёт 256
+# строк ERROR на каждый рестарт. Сервис от этого не падает, но лог
+# становится нечитаемым. Загрузок файлов в сервисе нет — emptyDir.
+extraVolumes:
+  - name: uploads
+    emptyDir: {}
+extraVolumeMounts:
+  - name: uploads
+    mountPath: /app/uploads

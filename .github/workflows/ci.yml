@@ -42,6 +42,14 @@ jobs:
       - name: shellcheck infra/*.sh
         run: shellcheck infra/*.sh
 
+      # traefik.dashboard.yml — копия traefik.yml с другим блоком api:
+      # (оверлей docker-compose.dashboard.yml подменяет им весь статический
+      # конфиг). Связать их средствами Traefik нельзя — при --configFile он
+      # игнорирует переменные окружения, include'ов у статического конфига
+      # нет, — поэтому расхождение ловится здесь, а не глазами.
+      - name: traefik configs in sync
+        run: bash infra/check-traefik-configs.sh
+
   # ============================================================
   # helm (F4, final review): чарт до сих пор не проверялся ни одной джобой,
   # а infra/gen-migration-values.sh течёт в него через values — поломка
@@ -56,32 +64,55 @@ jobs:
 
       - uses: azure/setup-helm@v4
 
-      - name: "Generate migration values (single source of truth: *.sql + infra/migrate.sh)"
+      # Список сервисов один и тот же у CI, CD и Makefile — infra/services.tsv
+      # (план 08 Task 3). Раньше здесь был свой список из трёх имён, и bff с
+      # frontend не проверялись ни разу: их values появились в Task 2, а
+      # джоба о них не знала.
+      - name: Собрать аргументы helm для каждого сервиса
+        id: svc
         run: |
-          for s in service-auth service-core service-commission; do
-            bash infra/gen-migration-values.sh "$s"
+          set -euo pipefail
+          mkdir -p ci-helm-args
+          awk '!/^[[:space:]]*#/ && NF' infra/services.tsv | while read -r name build cppbase mig tagsrc pwvar; do
+            args="-f infra/helm/values-${name}.yaml"
+            if [ "$mig" = yes ]; then
+              bash infra/gen-migration-values.sh "$name"
+              args="$args -f infra/helm/generated/migrations-${name}.yaml"
+            fi
+            # Пароль для рендера. После Task 2 чарт падает без него намеренно
+            # (fail-closed), поэтому CI обязан его передать — иначе джоба
+            # проверяла бы не чарт, а работу гварда. Значение фиктивное и из
+            # разрешённого набора: гвард userinfo отвергает всё, что в URL
+            # требует процент-кодирования.
+            if [ "$pwvar" != "-" ]; then
+              args="$args --set-string secrets.data.dbPassword=ciRenderOnlyPassword0"
+            fi
+            printf '%s %s %s\n' "$name" "$mig" "$args" >> ci-helm-args/list
           done
+          cat ci-helm-args/list
 
       - name: helm lint
         run: |
           set -euo pipefail
-          for s in service-auth service-core service-commission; do
-            echo "=== helm lint $s ==="
-            helm lint infra/helm/generic-service \
-              -f "infra/helm/values-${s}.yaml" \
-              -f "infra/helm/generated/migrations-${s}.yaml"
-          done
+          # IFS по умолчанию: имя и флаг — первые два поля, остаток строки
+          # уезжает в $args и намеренно раскрывается без кавычек.
+          while read -r name mig args; do
+            echo "=== helm lint $name ==="
+            # shellcheck disable=SC2086
+            helm lint infra/helm/generic-service $args
+          done < ci-helm-args/list
 
       - name: helm template
         run: |
           set -euo pipefail
-          for s in service-auth service-core service-commission; do
-            echo "=== helm template $s ==="
-            helm template "$s" infra/helm/generic-service \
-              -f "infra/helm/values-${s}.yaml" \
-              -f "infra/helm/generated/migrations-${s}.yaml" \
-              > "/tmp/${s}-rendered.yaml"
-          done
+          # IFS по умолчанию: имя и флаг — первые два поля, остаток строки
+          # уезжает в $args и намеренно раскрывается без кавычек.
+          while read -r name mig args; do
+            echo "=== helm template $name ==="
+            # shellcheck disable=SC2086
+            helm template "$name" infra/helm/generic-service $args \
+              > "/tmp/${name}-rendered.yaml"
+          done < ci-helm-args/list
 
       # Ловит ровно тот дрейф, который сейчас фактически есть в рабочем
       # дереве: infra/helm/generated/*.yaml пишет старую версию скрипта,
@@ -105,14 +136,14 @@ jobs:
               sys.exit(1)
           print(f"OK: {svc} migrate.sh matches infra/migrate.sh byte-for-byte")
           PY
-          for s in service-auth service-core service-commission; do
-            helm template "$s" infra/helm/generic-service \
-              -f "infra/helm/values-${s}.yaml" \
-              -f "infra/helm/generated/migrations-${s}.yaml" \
+          while read -r s mig args; do
+            [ "$mig" = yes ] || continue
+            # shellcheck disable=SC2086
+            helm template "$s" infra/helm/generic-service $args \
               --show-only templates/migrations-configmap.yaml \
               > "/tmp/${s}-migrations-cm.yaml"
             python3 /tmp/check_migrate_drift.py "$s" "/tmp/${s}-migrations-cm.yaml"
-          done
+          done < ci-helm-args/list
 
   # ============================================================
   # cpp: собирает ivr-cpp-base (с кэшем GHA) и внутри него гоняет workspace-
@@ -255,12 +286,16 @@ jobs:
       # видит его image store — сам билдер, созданный setup-buildx-action,
       # при этом не трогаем (env переопределяет билдер только для команд
       # внутри этого шага, не меняет `docker buildx use` глобально).
-      - name: Bring up stack (EMULATOR_MANUAL=true)
+      # План 08 (Task 4): ручной режим эмулятора приходит из оверлея
+      # docker-compose.e2e.yml, а не из префикса команды. Префикс был вторым
+      # источником правды рядом с `make test-api` и терялся при любом
+      # повторном `up` — ровно та ловушка, на которую наступили за план 07.
+      - name: Bring up stack (manual emulator via docker-compose.e2e.yml)
         env:
           BUILDX_BUILDER: default
         run: |
-          EMULATOR_MANUAL=true docker compose \
-            -f docker-compose.yml -f docker-compose.dev.yml \
+          docker compose \
+            -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.e2e.yml \
             up -d --build --wait \
             pg-auth migrate-auth service-auth \
             pg-core migrate-core service-core \

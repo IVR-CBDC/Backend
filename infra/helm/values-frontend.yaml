@@ -1,0 +1,101 @@
+# SPA (nginx со статикой сборки).
+#
+# Образ собирается и публикуется CI фронт-репозитория (alfa-cbdc-hub), здесь
+# он только потребляется. Тег подставляет CD из infra/helm/frontend-tags.env
+# (`--set image.tag=$FRONTEND_IMAGE_TAG`) — `latest` ниже заглушка.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/ivr-cbdc/frontend/spa
+  tag: latest
+
+# 8080, НЕ 80. Образ — nginxinc/nginx-unprivileged (план 06): стоковый
+# nginx:alpine слушает :80, а привязка к порту < 1024 требует root, под
+# runAsNonRoot такой под не стартует вовсе.
+service:
+  port: 8080
+
+config:
+  enabled: false
+
+jwtKeys:
+  private: false
+  public: false
+
+env: []
+
+migrations:
+  enabled: false
+
+secrets:
+  enabled: false
+
+# Наружу публикуется — внешний периметр (спека §3).
+# Явно НИЗКИЙ приоритет: `PathPrefix(`/`)` матчит в том числе /api и /ws, и
+# при сортировке по длине правила порядок держался бы на том, что правило
+# bff длиннее. То же решение, что в infra/traefik/dynamic.yml для compose.
+ingress:
+  enabled: true
+  match: "PathPrefix(`/`)"
+  priority: 1
+
+# Статика без cookie-запросов: CORS на этом маршруте не нужен.
+cors:
+  enabled: false
+
+# NetworkPolicy выключена по той же причине, что у bff: источник трафика —
+# Traefik из другого namespace, и его метки без живого кластера неизвестны.
+# Следствие называем прямо: без политики к этому поду (и к bff:4000) может
+# ходить ЛЮБОЙ под кластера, минуя Traefik и его middleware целиком. См.
+# values-bff.yaml.
+networkPolicy:
+  enabled: false
+
+# ПОРЯДОК ВЫКАТА: bff → frontend, не наоборот.
+#
+# nginx резолвит `bff` при разборе конфига, на старте, а не при первом
+# запросе (frontend/nginx.conf, proxy_pass http://bff:4000). Если пода bff в
+# namespace ещё нет, nginx падает с `[emerg] host not found in upstream
+# "bff"` и уходит в CrashLoopBackOff — выглядит это как сломанный образ
+# фронта, хотя сломан порядок выката. Воспроизведено локально.
+# CD (Task 3) обязан выкатывать bff первым.
+
+# nginx не знает ничего о готовности бэкенда за ним — обе пробы проверяют
+# ровно то, что он отдаёт SPA. Отдельного /ready у статики нет, поэтому
+# readinessPath не задаётся (наследует path).
+healthcheck:
+  path: /
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+# nginxinc/nginx-unprivileged работает под uid 101 (пользователь nginx).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 101
+  runAsGroup: 101
+  fsGroup: 101
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  # Исключений нет: read-only корень фронту не мешает, нужен только
+  # записываемый /tmp — см. extraVolumes ниже.
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Единственный каталог, в который nginx обязан писать. nginx-unprivileged
+# держит в /tmp и pid-файл, и все *_temp-пути (proxy_temp, client_body_temp,
+# fastcgi_temp, …) — без него под падает на `mkdir() "/tmp/proxy_temp"
+# failed (30: Read-only file system)`. /var/cache/nginx монтировать НЕ надо
+# (проверено локально: `docker run --read-only --user 101:101 --tmpfs /tmp`
+# отдаёт 200), а `sed -i` из docker-entrypoint.d по /etc/nginx печатает
+# `info:` и не фатален.
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp

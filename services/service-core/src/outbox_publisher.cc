@@ -1,5 +1,7 @@
 #include "outbox_publisher.h"
 
+#include "common/commit.h"
+
 #include <cstdlib>
 #include <sstream>
 #include <string>
@@ -124,6 +126,30 @@ Task<int> OutboxPublisher::publishOnce() {
 
   co_await trans->execSqlCoro("UPDATE outbox SET published_at = now() WHERE id = ANY($1::bigint[])",
                               idArray.str());
+
+  // Порядок PUBLISH -> UPDATE -> COMMIT здесь оставлен НАМЕРЕННО, в отличие
+  // от register.cc и repository.cc (см. common/commit.h и отчёт задачи 5).
+  //
+  // Тревога «событие о сделке, которой в базе может не оказаться» на этот
+  // код не распространяется: строка outbox становится видна SELECT'у выше
+  // только после COMMIT ТОЙ транзакции, которая её вставила вместе с самой
+  // сделкой (transactional outbox, спека §4.4). То есть к моменту PUBLISH
+  // сделка уже durable. Здешняя транзакция пишет только `published_at`.
+  //
+  // Переставить PUBLISH после COMMIT нельзя: падение между COMMIT и PUBLISH
+  // потеряло бы событие навсегда (at-most-once), а спека §4.4 требует
+  // at-least-once с дедупликацией по `seq`. Нынешний порядок в худшем
+  // случае даёт повтор доставки, который потребитель и так обязан гасить.
+  //
+  // Ждать COMMIT всё же нужно — ради честности: без ожидания неудачный
+  // COMMIT проходил молча, и тик рапортовал «опубликовано N», хотя
+  // `published_at` не сохранился и те же строки уедут в Redis повторно.
+  if (!co_await common::awaitCommit(std::move(trans))) {
+    LOG_ERROR << "outbox publisher: COMMIT не прошёл, published_at для " << ids.size()
+              << " строк не сохранён — они будут опубликованы повторно на следующем тике "
+                 "(доставка at-least-once, потребитель дедуплицирует по seq)";
+    co_return 0;
+  }
 
   co_return static_cast<int>(ids.size());
 }

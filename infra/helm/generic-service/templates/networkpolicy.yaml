@@ -1,4 +1,6 @@
 {{- if .Values.networkPolicy.enabled }}
+{{- $port := .Values.service.port -}}
+{{- $ns := .Values.networkPolicy.namespace -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -9,17 +11,52 @@ spec:
   podSelector:
     matchLabels:
       {{- include "generic-service.selectorLabels" . | nindent 6 }}
+  # Только Ingress. Egress намеренно не ограничивается: как только в
+  # policyTypes появляется Egress, всё исходящее (включая DNS к
+  # kube-dns:53) надо разрешать явно, и типовая ошибка — потерянный
+  # резолв, который выглядит как «сервис не поднялся». Пока Egress здесь
+  # нет, резолв имён этой политикой не затрагивается вообще: DNS — это
+  # исходящий трафик пода, ingress-правила к нему отношения не имеют.
   policyTypes:
     - Ingress
   ingress:
+    {{- if .Values.networkPolicy.allowFrom }}
+    # Кто имеет право ходить в этот сервис (спека §3): к auth/core — только
+    # bff, к commission — bff и core. Список объявляет каждый сервис сам в
+    # своих values; элемент — набор меток пода-источника (matchLabels),
+    # то есть podSelector, а не «весь namespace backend», как было раньше.
     - from:
-        - namespaceSelector:
+        {{- range .Values.networkPolicy.allowFrom }}
+        {{- if not . }}
+        {{- fail "networkPolicy.allowFrom содержит пустой элемент: podSelector с пустым matchLabels открывает ВЕСЬ namespace. Укажите метки пода-источника или уберите элемент." }}
+        {{- end }}
+        - podSelector:
             matchLabels:
-              kubernetes.io/metadata.name: backend
-        - namespaceSelector:
+              {{- toYaml . | nindent 14 }}
+          {{- if $ns }}
+          namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: {{ $ns }}
+          {{- end }}
+        {{- end }}
       ports:
-        - port: {{ .Values.service.port }}
+        - port: {{ $port }}
           protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.allowFromCIDRs }}
+    # Пробы kubelet. Правила `namespaceSelector: kube-system` здесь
+    # намеренно НЕТ: kubelet ходит в под с host-сети узла и ни под какой
+    # namespaceSelector не попадает, а kube-system заодно пустил бы к
+    # сервису Traefik, CoreDNS и metrics-server — то есть правило не
+    # давало бы того, ради чего пишется, и нарушало бы инвариант «только
+    # BFF (и core → commission)».
+    - from:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - port: {{ $port }}
+          protocol: TCP
+    {{- end }}
 {{- end }}

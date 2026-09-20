@@ -1,0 +1,133 @@
+name: Frontend image tags
+
+# Приёмник `repository_dispatch` из alfa-cbdc-hub (спека §8).
+#
+# ЧТО ЭТО ЗАКРЫВАЕТ. Деплой выкатывает пять релизов одним циклом по
+# infra/services.tsv. Три образа собираются здесь и тегируются sha этого
+# коммита; bff и frontend собираются в другом репозитории, и его sha здесь
+# неоткуда не известен. Раньше эта дыра была заткнута заглушкой `latest` в
+# infra/helm/frontend-tags.env — и CD обрывался до первого `helm upgrade`,
+# потому что infra/k3s-preflight.sh отвергает неизменяемые теги (это не
+# поломка, а отказ работать вхолостую: upgrade с тем же тегом — no-op).
+#
+# Теперь дыру закрывает этот workflow: CD фронт-репозитория, опубликовав
+# образы, шлёт сюда событие `frontend-images` с их тегами, а мы коммитим их
+# в infra/helm/frontend-tags.env. Деплой остаётся воспроизводимым по git:
+# по коммиту Backend однозначно восстанавливается, какая сборка фронта
+# поехала.
+#
+# ПОЧЕМУ КОММИТ, А НЕ ПЕРЕМЕННАЯ РЕПОЗИТОРИЯ. Переменная — это состояние вне
+# git: «что было на стенде месяц назад» по ней не восстановить, история
+# изменений не видна в diff, откат делается не `git revert`, а руками в
+# настройках. Файл в репозитории даёт и то, и другое бесплатно.
+#
+# ПОЧЕМУ ЭТОТ КОММИТ НЕ ЗАПУСКАЕТ CD САМ ПО СЕБЕ. Пуш ботом с
+# `secrets.GITHUB_TOKEN` намеренно не триггерит workflow (защита GitHub от
+# рекурсии), поэтому deploy.yml после него не стартует. Это правильное
+# поведение по умолчанию — выкат фронта не должен случаться от того, что
+# кто-то смержил PR в другом репозитории, — но знать об этом надо: чтобы
+# выкатить новые теги, нужен push в main здесь (или `workflow_dispatch`
+# deploy.yml, если он будет добавлен).
+#
+# ЧЕСТНО: здесь этот workflow не выполнялся и выполниться не может — у
+# репозитория нет remote, dispatch присылать неоткуда. Проверен разбором
+# YAML и локальным прогоном самой логики записи файла (скрипт шага ниже
+# выполнен руками в скретчпаде на тех же входных данных).
+
+on:
+  repository_dispatch:
+    types: [frontend-images]
+
+jobs:
+  update-tags:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Validate payload
+        env:
+          BFF_TAG: ${{ github.event.client_payload.bff_tag }}
+          FRONTEND_TAG: ${{ github.event.client_payload.frontend_tag }}
+        run: |
+          set -euo pipefail
+          for pair in "BFF_TAG:$BFF_TAG" "FRONTEND_TAG:$FRONTEND_TAG"; do
+            name=${pair%%:*}; value=${pair#*:}
+            if [ -z "$value" ]; then
+              echo "::error::$name пуст в client_payload — писать в frontend-tags.env нечего."
+              exit 1
+            fi
+            # Тег должен быть пригоден для ссылки на образ. Проверка не
+            # косметическая: значение приезжает из другого репозитория и
+            # уходит в `helm upgrade --set-string image.tag=...`.
+            # Полная форма ссылки на тег по спецификации OCI/docker:
+            # [a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}. Проверять только набор
+            # символов мало: `-rf` и `.` состоят из разрешённых символов, но
+            # тегами не являются — реестр отвергнет их уже во время выката,
+            # дальше от причины.
+            case "$value" in
+              *[!A-Za-z0-9_.-]*)
+                echo "::error::$name='$value' содержит недопустимые для тега образа символы."
+                exit 1 ;;
+              [!A-Za-z0-9_]*)
+                echo "::error::$name='$value' начинается не с буквы, цифры или '_' —" \
+                     "тег образа так начинаться не может."
+                exit 1 ;;
+            esac
+            if [ "${#value}" -gt 128 ]; then
+              echo "::error::$name длиной ${#value} — тег образа не длиннее 128 символов."
+              exit 1
+            fi
+            # Тот же список, что в infra/k3s-preflight.sh. Дублирование
+            # намеренное и дешёвое: отказать здесь — значит не создать
+            # коммит, который всё равно обрушит выкат позже и дальше от
+            # причины.
+            for m in latest main master edge dev stable; do
+              if [ "$value" = "$m" ]; then
+                echo "::error::$name='$value' — плавающий тег. helm upgrade с неизменившимся" \
+                     "image.tag это no-op: релиз обновится 'успешно', а новая сборка фронта" \
+                     "молча не выкатится. Присылай sha-<7>, а не плавающий тег."
+                exit 1
+              fi
+            done
+          done
+          echo "payload ok: bff=$BFF_TAG frontend=$FRONTEND_TAG"
+
+      - name: Write infra/helm/frontend-tags.env
+        env:
+          BFF_TAG: ${{ github.event.client_payload.bff_tag }}
+          FRONTEND_TAG: ${{ github.event.client_payload.frontend_tag }}
+        run: |
+          set -euo pipefail
+          # Перезаписываются только две строки со значениями; шапка-комментарий
+          # файла — документация, её сохраняем.
+          sed -i \
+            -e "s|^BFF_IMAGE_TAG=.*|BFF_IMAGE_TAG=$BFF_TAG|" \
+            -e "s|^FRONTEND_IMAGE_TAG=.*|FRONTEND_IMAGE_TAG=$FRONTEND_TAG|" \
+            infra/helm/frontend-tags.env
+          grep -E '^(BFF|FRONTEND)_IMAGE_TAG=' infra/helm/frontend-tags.env
+
+      - name: Commit if changed
+        env:
+          SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          SOURCE_RUN: ${{ github.event.client_payload.source_run }}
+          BFF_TAG: ${{ github.event.client_payload.bff_tag }}
+          FRONTEND_TAG: ${{ github.event.client_payload.frontend_tag }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- infra/helm/frontend-tags.env; then
+            echo "теги не изменились — коммитить нечего (повторный dispatch на тот же коммит)"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add infra/helm/frontend-tags.env
+          git commit -m "chore(deploy): теги образов фронта bff=$BFF_TAG frontend=$FRONTEND_TAG
+
+Автоматический коммит: repository_dispatch из alfa-cbdc-hub.
+Источник: ${SOURCE_SHA:-неизвестен}
+Прогон:   ${SOURCE_RUN:-неизвестен}"
+          git push
