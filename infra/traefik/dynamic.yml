@@ -29,6 +29,10 @@ http:
         accessControlAllowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
         accessControlAllowHeaders: ["Authorization", "Content-Type"]
         accessControlAllowCredentials: true
+        # Список origin'ов, а не один: без Vary: Origin разделяемый кэш
+        # перед стендом отдаст Access-Control-Allow-Origin одного origin'а
+        # другому. Дефолт Traefik — false, поэтому пишем явно.
+        addVaryHeader: true
         accessControlMaxAge: 600
 
   routers:
