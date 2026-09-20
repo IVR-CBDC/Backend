@@ -286,12 +286,16 @@ jobs:
       # видит его image store — сам билдер, созданный setup-buildx-action,
       # при этом не трогаем (env переопределяет билдер только для команд
       # внутри этого шага, не меняет `docker buildx use` глобально).
-      - name: Bring up stack (EMULATOR_MANUAL=true)
+      # План 08 (Task 4): ручной режим эмулятора приходит из оверлея
+      # docker-compose.e2e.yml, а не из префикса команды. Префикс был вторым
+      # источником правды рядом с `make test-api` и терялся при любом
+      # повторном `up` — ровно та ловушка, на которую наступили за план 07.
+      - name: Bring up stack (manual emulator via docker-compose.e2e.yml)
         env:
           BUILDX_BUILDER: default
         run: |
-          EMULATOR_MANUAL=true docker compose \
-            -f docker-compose.yml -f docker-compose.dev.yml \
+          docker compose \
+            -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.e2e.yml \
             up -d --build --wait \
             pg-auth migrate-auth service-auth \
             pg-core migrate-core service-core \

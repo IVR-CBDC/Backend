@@ -246,24 +246,83 @@ make e2e-stand-down
 проходит комплаенс/расчёт вживую, без ручного тика). Если тебе нужен именно
 живой автопрогресс — не используй `make e2e-stand-up`, подними стенд как
 обычно (`make up`, при необходимости добавив `--profile bff --profile
-frontend` без `EMULATOR_MANUAL`).
+frontend` — но без `docker-compose.e2e.yml`).
 
-`make e2e-stand-up` — единственный поддерживаемый способ поднять стенд под
-e2e: `EMULATOR_MANUAL=true` зашита в саму цель Makefile, а не полагается на
-переменную окружения того, кто её вызывает. Раньше эта команда набиралась
-руками, и повторный `up --profile bff --profile frontend ...` без префикса
-`EMULATOR_MANUAL=true` (например, чтобы просто пересобрать/поднять
-bff/frontend после правки) пересоздавал `service-core` со значением по
-умолчанию (`false`) — тихо и без предупреждения ломая детерминированность
-уже идущих тестов. Подробности — в комментарии над целью в `Makefile`.
+### Режим эмулятора — свойство файла, а не соглашения (план 08)
+
+`EMULATOR_MANUAL=true` живёт в отдельном оверлее `docker-compose.e2e.yml`, а
+не в префиксе команды. Разница не косметическая. `environment` в compose —
+это желаемое состояние контейнера, и при каждом `up` того же проекта оно
+пересчитывается для **всех** сервисов дефолтного набора, а не только для
+названных на команде. Поэтому достаточно было один раз набрать
+`docker compose ... up -d bff` без префикса — и `service-core` пересоздавался
+с `EMULATOR_MANUAL=false`. Идущие в этот момент e2e не падали, они тихо
+теряли детерминированность. За план 07 на это наступили дважды.
+
+Когда режим задан файлом, забыть его нельзя: он либо в списке `-f`, либо
+нет, и это видно в самой команде.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+  -f docker-compose.e2e.yml up -d --wait service-core   # ручной режим, идемпотентно
+```
+
+Два практических следствия:
+
+- **Возврат в автоматический режим больше не требует памяти.** Любой `up`
+  без этого файла (в т.ч. обычный `make up`) сам пересоздаст `service-core`
+  с `EMULATOR_MANUAL=false` — желаемое состояние изменилось. Проверено
+  локально: после `make e2e-stand-down` и `make up` поле `emulator_manual`
+  в `/health` становится `false`.
+- **Режим видно снаружи.** `GET /health` service-core отдаёт
+  `emulator_manual` и `emulator_enabled` (на `ok` они не влияют — оба режима
+  штатные, это диагностика конфигурации):
+
+  ```bash
+  curl -s http://127.0.0.1:18081/health   # порт открыт только dev-оверлеем
+  # {"emulator_enabled":true,"emulator_manual":true,"ok":true,...}
+  ```
+
+  Это же поле читает `global-setup.ts` Playwright: неверный режим виден
+  одной строкой в начале прогона, а не как `404` на
+  `/internal/emulator/tick` посреди теста.
 
 Образы `bff`/`frontend` по умолчанию берутся из ghcr (см. разделы «BFF» и
 «Frontend SPA» выше) — если их там ещё нет (CI Frontend-репозитория их пока
-не публикует), передай уже собранные локально теги:
+не публиковал), передай уже собранные локально теги:
 
 ```bash
 BFF_IMAGE=bff-ci:latest FRONTEND_IMAGE=frontend-ci:latest make e2e-stand-up
 ```
+
+### Стенд без сборки C++ (для CI фронт-репозитория)
+
+Джоба `e2e` репозитория `alfa-cbdc-hub` поднимает этот же стенд, но собирать
+в ней C++ незачем: код Backend в PR фронта не менялся, а полный `cmake`
+поверх drogon — десятки минут на чистом раннере. Два рычага:
+
+```bash
+E2E_BUILD= \
+SERVICE_AUTH_IMAGE=ghcr.io/ivr-cbdc/backend/service-auth:main \
+SERVICE_CORE_IMAGE=ghcr.io/ivr-cbdc/backend/service-core:main \
+SERVICE_COMMISSION_IMAGE=ghcr.io/ivr-cbdc/backend/service-commission:main \
+BFF_IMAGE=bff-ci:latest FRONTEND_IMAGE=frontend-ci:latest \
+make e2e-stand-up
+```
+
+Пустой `E2E_BUILD` убирает `--build` (и заодно проверку/сборку
+`ivr-cpp-base` — она нужна только для сборки). Плавающий тег `:main` здесь
+допустим намеренно: sha коммита Backend тому прогону неизвестен. Для
+**выката** плавающий тег запрещён — см. «Теги образов фронта» ниже.
+
+### E2E и кластер
+
+E2E **не проверяют кластерную конфигурацию** — это записанное решение, а не
+умолчание (спека §4.3). Ручка `POST /internal/emulator/tick` не публикуется
+наружу ни в compose, ни в k3s (там к `service-core` по NetworkPolicy ходит
+только BFF), поэтому сюит живёт на compose-стенде. Кластерный деплой
+проверяют `helm lint`/`helm template`, пробы `/health` и `/ready` и
+smoke-цели `make k3s-test-*`.
 
 **F2 (план 07, final review) — порядок мержа:** цель `e2e-stand-up` живёт
 только в ветке `feat/e2e-support` этого репозитория, не в его ветке по
@@ -274,8 +333,35 @@ BFF_IMAGE=bff-ci:latest FRONTEND_IMAGE=frontend-ci:latest make e2e-stand-up
 зелёной, не наоборот.
 
 **F8 (план 07, final review):** `make e2e-stand-down` не возвращает
-`service-core` в автоматический режим эмулятора — см. предупреждение в
-выводе самой цели и комментарий над ней в `Makefile`.
+`service-core` в автоматический режим эмулятора — остановка `bff`/`frontend`
+его намеренно не трогает. Но вспоминать команду для возврата больше не
+нужно: её делает любой `up` без `docker-compose.e2e.yml` (см. выше).
+
+## Теги образов фронта и dispatch (план 08)
+
+`bff` и SPA собираются не здесь, и sha их коммита этому репозиторию
+неоткуда не известен. Связь замыкается двумя файлами:
+
+- `alfa-cbdc-hub/.github/workflows/publish.yml` — на push в `main` пушит
+  `ghcr.io/ivr-cbdc/frontend/{bff,spa}` тегами `sha-<7>` и `main`, затем
+  шлёт сюда `repository_dispatch` типа `frontend-images`;
+- `.github/workflows/frontend-tags.yml` — принимает событие, валидирует
+  теги и переписывает `infra/helm/frontend-tags.env` коммитом бота.
+
+Тег в этом файле обязан быть **неизменяемым**: `helm upgrade` с тем же
+`image.tag` — no-op, релиз обновится «успешно», а новая сборка фронта молча
+не выкатится. `infra/k3s-preflight.sh` отвергает `latest`/`main`/… и
+обрывает выкат до первого `helm upgrade`. Плавающий `:main` существует для
+другого потребителя — CI, который тянет им образы на эфемерный стенд.
+
+**Честно о текущем состоянии:** заглушки `latest`, из-за которой CD
+обрывался целиком, больше нет — стоит тег, который `publish.yml` даст для
+коммита `3199330` ветки `main` фронт-репозитория. Но образа с этим тегом в
+реестре нет: remote у репозиториев нет, организации `IVR-CBDC` на GitHub не
+существует, `publish.yml` ни разу не выполнялся. Снята одна преграда
+(проверка тега); следующая — `docker manifest inspect` в `deploy.yml` —
+честно скажет «образа нет в реестре». Порядок отказа правильный: он
+указывает на настоящую причину, а не на формат тега.
 
 ## Структура
 
@@ -283,6 +369,8 @@ BFF_IMAGE=bff-ci:latest FRONTEND_IMAGE=frontend-ci:latest make e2e-stand-up
 backend-platform/
 ├── docker-compose.yml                # 3 сервиса + 3 БД + Redis + Traefik
 ├── docker-compose.dev.yml            # оверлей: host-порты сервисов и БД (только для тестов/отладки)
+├── docker-compose.e2e.yml            # оверлей: ручной режим эмулятора (EMULATOR_MANUAL=true)
+├── docker-compose.dashboard.yml      # оверлей: дашборд Traefik (по умолчанию выключен)
 ├── Makefile
 ├── infra/
 │   ├── gen-keys.sh                   # ./gen-keys.sh — RSA для JWT
@@ -405,7 +493,10 @@ blocked ──устранение (переподача документа)─�
 - `EMULATOR_SPEED` — `demo` (секунды, по умолчанию) или `realistic` (минуты).
 - `EMULATOR_MANUAL` — `true` отключает фоновый цикл и включает ручку
   `POST /internal/emulator/tick` (без JWT, не публикуется наружу) для детерминированных
-  тестовых стендов; без неё маршрут не регистрируется вовсе.
+  тестовых стендов; без неё маршрут не регистрируется вовсе. Задаётся оверлеем
+  `docker-compose.e2e.yml`, а не префиксом команды (см. «Стенд под e2e»).
+  Текущее значение видно в `/health`: поля `emulator_manual` и `emulator_enabled`
+  (диагностика конфигурации, на `ok` не влияют — оба режима штатные).
 
 **События** — transactional outbox: `DealRepository::apply` пишет строки в `outbox` в той же
 транзакции, что и данные, паблишер (`runEvery(0.5s)`) публикует их в Redis-канал

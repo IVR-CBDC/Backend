@@ -171,7 +171,22 @@ services:
   # ============================================================
   # Сервисы
   # ============================================================
+  # План 08, Task 4: у трёх собираемых здесь сервисов появилось явное имя
+  # образа. Два следствия, оба нужны.
+  #
+  # 1. Локально имя перестало быть производным от имени проекта
+  #    (`ivr-service-auth`) — его больше не поменяет переименование каталога.
+  # 2. CI фронт-репозитория (alfa-cbdc-hub, джоба e2e) подставляет сюда
+  #    опубликованные ghcr-образы и поднимает стенд БЕЗ `--build`: сборка
+  #    service-auth/service-core — это полный cmake поверх ivr-cpp-base,
+  #    ~25-40 минут на чистом раннере, и платить их на каждый PR фронта
+  #    незачем (долг плана 07). Тег там плавающий `:main` — sha коммита
+  #    Backend фронтовому CI неизвестен и известен быть не может. Для
+  #    ВЫКАТА плавающий тег запрещён (infra/k3s-preflight.sh), но здесь
+  #    речь про эфемерный стенд одной джобы, а не про воспроизводимость
+  #    релиза.
   service-auth:
+    image: ${SERVICE_AUTH_IMAGE:-ivr-service-auth:local}
     build:
       context: .
       dockerfile: services/service-auth/Dockerfile
@@ -200,6 +215,7 @@ services:
     networks: [backend-net]
 
   service-core:
+    image: ${SERVICE_CORE_IMAGE:-ivr-service-core:local}
     build:
       context: .
       dockerfile: services/service-core/Dockerfile
@@ -216,6 +232,12 @@ services:
       COMMISSION_URL: "http://service-commission:8000"
       EMULATOR_ENABLED: "true"
       EMULATOR_SPEED: demo
+      # Ручной режим эмулятора включается ОВЕРЛЕЕМ docker-compose.e2e.yml, а
+      # не этой переменной (план 08, Task 4 — там же объяснение, почему
+      # префикс команды был ловушкой). Переменная оставлена как аварийный
+      # рычаг для одиночной ручной команды; штатный путь — `-f
+      # docker-compose.e2e.yml`, и именно его используют `make e2e-stand-up`
+      # и `make test-api`.
       EMULATOR_MANUAL: "${EMULATOR_MANUAL:-false}"
     volumes:
       - ./infra/keys/jwt_public.jwk:/etc/keys/jwt_public.jwk:ro
@@ -233,6 +255,7 @@ services:
     networks: [backend-net]
 
   service-commission:
+    image: ${SERVICE_COMMISSION_IMAGE:-ivr-service-commission:local}
     build:
       context: .
       dockerfile: services/service-commission/Dockerfile

@@ -5,6 +5,24 @@
        k3s-secrets k3s-secrets-check k3s-preflight k3s-preflight-data \
        k3s-test-health k3s-test-auth k3s-test-core
 
+# Наборы compose-файлов. Существуют ровно в одном месте, чтобы `-f` не
+# расходились между целями (и между Makefile и CI фронт-репозитория,
+# который вызывает эти цели).
+#
+#   DEV   — dev-оверлей: host-порты сервисов и БД (tests/api, ручная отладка).
+#   E2E   — dev + docker-compose.e2e.yml (EMULATOR_MANUAL=true как свойство
+#           набора файлов, а не как префикс команды — см. сам файл).
+COMPOSE_DEV := -f docker-compose.yml -f docker-compose.dev.yml
+COMPOSE_E2E := $(COMPOSE_DEV) -f docker-compose.e2e.yml
+
+# Флаг сборки для e2e-стенда. Локально — `--build` (исходники под рукой,
+# стенд обязан отражать рабочую копию). CI фронт-репозитория вызывает
+# `E2E_BUILD= make e2e-stand-up`, предварительно стянув опубликованные
+# backend-образы из ghcr и передав их через SERVICE_*_IMAGE: там пересборка
+# C++ — это десятки минут на каждый PR фронта, и она ничего не проверяет
+# (код Backend в том прогоне не менялся).
+E2E_BUILD ?= --build
+
 keys:
 	bash infra/gen-keys.sh
 
@@ -123,13 +141,13 @@ smoke-commission:
 		-H "Authorization: Bearer $$TOKEN" -H 'Content-Type: application/json' \
 		-d '{"from_country":"RU","to_country":"CN","currency":"CNY","amount":100000}'
 
-# Поднимает стенд в детерминированном режиме эмулятора (EMULATOR_MANUAL=true,
-# см. docker-compose.yml) и гоняет tests/api против него через проброшенные
+# Поднимает стенд в детерминированном режиме эмулятора (оверлей
+# docker-compose.e2e.yml) и гоняет tests/api против него через проброшенные
 # порты 18080/18081 — доступные только с docker-compose.dev.yml (host-порты
 # не публикуются в обычном docker-compose.yml, см. Task 3).
 test-api:
 	@docker image inspect ivr-cpp-base:latest >/dev/null 2>&1 || $(MAKE) cpp-base
-	EMULATOR_MANUAL=true docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build \
+	docker compose $(COMPOSE_E2E) up -d --build \
 		pg-auth migrate-auth service-auth \
 		pg-core migrate-core service-core \
 		pg-commission migrate-commission service-commission redis
@@ -138,9 +156,10 @@ test-api:
 # ============================================================
 # e2e (план 07, задача 3, Frontend-репозиторий): полный стенд для Playwright
 # из ../alfa-cbdc-hub/e2e — auth/core/commission/redis (как test-api) плюс
-# bff/frontend под своими профилями, с EMULATOR_MANUAL=true.
+# bff/frontend под своими профилями, в ручном режиме эмулятора.
 #
-# Ловушка, найденная при отладке плана 07 (задача 2): единственным способом
+# Ловушка, найденная при отладке плана 07 (задача 2) — ИСТОРИЯ, вылечена в
+# плане 08 (Task 4), см. ниже: единственным способом
 # поднять такой стенд руками было набрать
 #   EMULATOR_MANUAL=true docker compose ... --profile bff --profile frontend up -d --wait
 # — а если потом (по любой причине, например пересобрать/поднять только
@@ -154,11 +173,19 @@ test-api:
 # Результат — тихая потеря детерминированности уже идущих e2e, без единого
 # предупреждения.
 #
-# Эта цель — единственный поддерживаемый способ поднять стенд под e2e:
-# EMULATOR_MANUAL=true зашита в саму команду (а не в переменную окружения
-# вызывающего), поэтому её невозможно забыть при повторном вызове — сколько
-# раз `make e2e-stand-up` ни выполни подряд, service-core всегда пересоздаётся
-# (если вообще пересоздаётся) с одним и тем же значением.
+# ПЛАН 08, TASK 4 — ловушка вылечена структурно. Режим больше не префикс
+# команды, а отдельный файл docker-compose.e2e.yml (там же полное
+# объяснение). Отсюда два свойства, которых раньше не было:
+#   * повторный `docker compose $(COMPOSE_E2E) up -d bff` руками НЕ сбросит
+#     режим — он в списке `-f`, а не в памяти набиравшего;
+#   * и обратное: обычный `make up` (без этого файла) сам вернёт core в
+#     автоматический режим, потому что желаемое состояние контейнера
+#     изменилось. Раньше для этого надо было вспомнить команду из README.
+#
+# Проверить режим, не читая docker inspect: `/health` service-core отдаёт
+# `emulator_manual` (план 08, Task 4). Это же поле проверяет globalSetup
+# Playwright — неверный режим виден одной строкой в начале прогона, а не
+# 404-й посреди теста.
 #
 # BFF_IMAGE/FRONTEND_IMAGE — чтобы поднять bff/frontend из уже собранных
 # образов (например, из Frontend CI, см. .github/workflows/ci.yml того
@@ -167,35 +194,50 @@ test-api:
 # Без них компоуз попробует стянуть ghcr.io/ivr-cbdc/frontend/{bff,spa} —
 # либо собери их локально через docker-compose.override.yml.example (см.
 # README, раздел «BFF»), либо передай свои теги как выше.
+#
+# SERVICE_AUTH_IMAGE/SERVICE_CORE_IMAGE/SERVICE_COMMISSION_IMAGE + пустой
+# E2E_BUILD — режим «не собирать C++, взять готовое из ghcr», которым
+# пользуется джоба e2e фронт-репозитория. Локально не нужен.
 # ============================================================
 e2e-stand-up: keys
-	@docker image inspect ivr-cpp-base:latest >/dev/null 2>&1 || $(MAKE) cpp-base
-	EMULATOR_MANUAL=true docker compose -f docker-compose.yml -f docker-compose.dev.yml \
-		--profile bff --profile frontend up -d --build --wait
+	@if [ -n "$(E2E_BUILD)" ]; then \
+		docker image inspect ivr-cpp-base:latest >/dev/null 2>&1 || $(MAKE) cpp-base; \
+	else \
+		echo "E2E_BUILD пуст — образы сервисов не собираются, берутся как есть"; \
+		echo "  (SERVICE_AUTH_IMAGE/SERVICE_CORE_IMAGE/SERVICE_COMMISSION_IMAGE)"; \
+	fi
+	docker compose $(COMPOSE_E2E) \
+		--profile bff --profile frontend up -d $(E2E_BUILD) --wait
 	@echo ""
-	@echo "Стенд под e2e поднят (EMULATOR_MANUAL=true):"
-	@echo "  SPA: http://127.0.0.1:8090"
-	@echo "  BFF: http://127.0.0.1:14000"
+	@echo "Стенд под e2e поднят (EMULATOR_MANUAL=true из docker-compose.e2e.yml):"
+	@echo "  SPA: http://127.0.0.1:8090   (он же адрес BFF для e2e — nginx проксирует /api и /ws)"
+	@echo "  BFF: http://127.0.0.1:14000  (прямой порт, для ручной отладки)"
+	@echo "  core /health: http://127.0.0.1:18081/health — поле emulator_manual должно быть true"
 
 # Останавливает только bff/frontend — не трогает остальной стенд (auth/core/
 # commission/БД), он может быть нужен для чего-то ещё (make test-api и т.п.).
 #
 # F8 (план 07, final review): эта цель НЕ возвращает service-core в
-# автоматический режим — EMULATOR_MANUAL=true, выставленный e2e-stand-up,
-# так и остаётся на контейнере. Разработчик, вернувшийся к ручной работе со
-# стендом после e2e, увидит сделки, которые сами никуда не двигаются, без
-# единой ошибки (тикать некому — воркфлоу тика нет, фоновый цикл выключен).
-# Печатаем это явно вместо тихого пересоздания core с EMULATOR_MANUAL=false
-# — пересоздание само по себе может быть нежелательным посреди чужой сессии
-# отладки (например, если e2e-stand-down вызван между двумя e2e-прогонами).
+# автоматический режим — остановка bff/frontend его не трогает намеренно
+# (пересоздание core посреди чужой сессии отладки нежелательно, например
+# если e2e-stand-down вызван между двумя прогонами e2e).
+#
+# План 08, Task 4: но и вспоминать команду для возврата больше не нужно.
+# Ручной режим теперь свойство набора файлов, поэтому любой обычный
+# `make up` (или `docker compose up -d service-core` без
+# docker-compose.e2e.yml) пересоздаёт core с EMULATOR_MANUAL=false сам —
+# проверено локально. Команда ниже оставлена для случая «вернуть автопрогресс,
+# не поднимая остальной стенд».
 e2e-stand-down:
-	docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+	docker compose $(COMPOSE_E2E) \
 		--profile bff --profile frontend stop bff frontend
 	@echo ""
-	@echo "bff/frontend остановлены. service-core остаётся в EMULATOR_MANUAL=true"
-	@echo "(сделки не будут двигаться сами по времени). Чтобы вернуть живой"
-	@echo "автопрогресс: EMULATOR_MANUAL=false docker compose -f docker-compose.yml \\"
-	@echo "  -f docker-compose.dev.yml up -d --wait service-core"
+	@echo "bff/frontend остановлены. service-core пока остаётся в ручном режиме"
+	@echo "(EMULATOR_MANUAL=true — сделки не двигаются сами по времени)."
+	@echo "Автопрогресс возвращает любой up БЕЗ docker-compose.e2e.yml, например:"
+	@echo "  make up"
+	@echo "  docker compose $(COMPOSE_DEV) up -d --wait service-core"
+	@echo "Проверить: curl -s http://127.0.0.1:18081/health | grep emulator_manual"
 
 # Три набора, что гоняет CI на каждый PR (см. .github/workflows/ci.yml).
 # test-commission-db сюда намеренно не входит: ему нужен поднятый
