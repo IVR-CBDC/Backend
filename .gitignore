@@ -12,3 +12,7 @@ compile_commands.json
 .claude/
 cmake-build-debug/
 infra/helm/generated/
+
+# smoke-цели сохраняют сюда cookie сессии (make test-login)
+.smoke-cookies.txt
+.k3s-smoke-cookies.txt

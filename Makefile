@@ -1,4 +1,4 @@
-.PHONY: keys cpp-base up down logs test-register test-login test-me smoke-commission test-commission test-commission-db test-cpp test-api test-all smoke-deal lsp openapi \
+.PHONY: keys cpp-base up down logs test-register test-login test-me test-token test-health smoke-commission test-commission test-commission-db test-cpp test-api test-all smoke-deal lsp openapi \
        e2e-stand-up e2e-stand-down \
        new-cpp new-python k3s-install k3s-import-images k3s-setup \
        k3s-build k3s-deploy k3s-deploy-data up-k3s down-k3s k3s-status \
@@ -20,9 +20,9 @@ up: keys
 	@echo "  http://localhost/                    -> frontend (профиль frontend, см. make e2e-stand-up)"
 	@echo "  http://localhost/api, /ws            -> bff (профиль bff)"
 	@echo "  service-auth/core/commission         -> только внутри сети (план 08: наружу их нет)"
-	@echo "  http://localhost:8081                -> traefik dashboard"
 	@echo ""
 	@echo "  bff/frontend под профилями: без них Traefik жив, /api и / отдадут 502."
+	@echo "  Дашборд Traefik выключен по умолчанию: docker-compose.dashboard.yml."
 
 down:
 	docker compose down -v
@@ -31,20 +31,54 @@ logs:
 	docker compose logs -f service-auth service-core service-commission
 
 # === Smoke tests ===
+#
+# План 08 убрал прямые маршруты `/api/auth` и `/api/core` через Traefik:
+# наружу торчат только frontend (`/`) и bff (`/api`, `/ws`). Цели ниже
+# ходят в BFF, а не в сервисы напрямую. Две особенности BFF меняют их вид:
+#
+#  * `register`/`login` НЕ возвращают `token` в теле — токен уезжает в
+#    HttpOnly-cookie `session` (спека §3.1). Поэтому здесь cookie jar, а не
+#    `export TOKEN=...`: цели проверяют то, что реально происходит.
+#  * мутирующие запросы проходят CSRF-проверку `Origin` против
+#    ALLOWED_ORIGINS, поэтому заголовок `Origin` обязателен.
+#
+# Требуют поднятого профиля `bff` (обычный `make up` его не поднимает):
+#   docker compose --profile bff up -d --wait bff     # или make e2e-stand-up
+SMOKE_URL    ?= http://localhost
+SMOKE_ORIGIN ?= http://localhost
+COOKIE_JAR   ?= .smoke-cookies.txt
 
 test-register:
-	curl -s -X POST http://localhost/api/auth/register \
-		-H 'Content-Type: application/json' \
+	curl -s -c $(COOKIE_JAR) -X POST $(SMOKE_URL)/api/auth/register \
+		-H 'Content-Type: application/json' -H 'Origin: $(SMOKE_ORIGIN)' \
 		-d '{"login":"egor","password":"hunter22","name":"Егор","company_name":"ООО Ромашка","inn":"7707083893"}' | jq
 
 test-login:
-	curl -s -X POST http://localhost/api/auth/login \
-		-H 'Content-Type: application/json' \
+	curl -s -c $(COOKIE_JAR) -X POST $(SMOKE_URL)/api/auth/login \
+		-H 'Content-Type: application/json' -H 'Origin: $(SMOKE_ORIGIN)' \
 		-d '{"login":"egor","password":"hunter22"}' | jq
+	@echo "session-cookie сохранена в $(COOKIE_JAR) (см. make test-me, make test-token)"
 
 test-me:
-	@if [ -z "$$TOKEN" ]; then echo "set TOKEN=..."; exit 1; fi
-	curl -s http://localhost/api/auth/me -H "Authorization: Bearer $$TOKEN" | jq
+	@test -s $(COOKIE_JAR) || { echo "нет $(COOKIE_JAR) — сначала make test-login"; exit 1; }
+	curl -s -b $(COOKIE_JAR) $(SMOKE_URL)/api/auth/me | jq
+
+# Достаёт JWT из cookie jar. Нужен тем целям, которые ходят в сервисы мимо
+# BFF по внутренней сети (smoke-commission, smoke-deal) — там Bearer-токен
+# по-прежнему единственный способ авторизоваться, BFF в этой цепочке нет.
+# Netscape-формат cookie jar: поля 6 и 7 — имя и значение.
+test-token:
+	@test -s $(COOKIE_JAR) || { echo "нет $(COOKIE_JAR) — сначала make test-login" >&2; exit 1; }
+	@awk '$$6=="session"{print $$7}' $(COOKIE_JAR)
+
+# /health сервисов наружу не публикуется и BFF его не проксирует (спека §3:
+# наружу только `/api` и `/ws`), поэтому здоровье смотрим на host-портах,
+# которые публикует docker-compose.dev.yml. Через Traefik такой проверки
+# больше нет и быть не должно.
+test-health:
+	@echo "service-auth:" && curl -sf http://127.0.0.1:18080/health | jq
+	@echo "service-core:" && curl -sf http://127.0.0.1:18081/health | jq
+	@echo "bff (/ready):" && curl -sf http://127.0.0.1:14000/ready | jq
 
 test-commission:
 	cd services/service-commission && uv run pytest -q -m "not db"
@@ -58,7 +92,7 @@ test-commission-db:
 		uv run pytest -q -m db
 
 smoke-commission:
-	@if [ -z "$$TOKEN" ]; then echo "set TOKEN=..."; exit 1; fi
+	@if [ -z "$$TOKEN" ]; then echo "set TOKEN=\$$(make -s test-token)"; exit 1; fi
 	docker run --rm --network ivr_backend-net curlimages/curl:8.10.1 -s \
 		-X POST http://service-commission:8000/api/commission/quotes \
 		-H "Authorization: Bearer $$TOKEN" -H 'Content-Type: application/json' \
@@ -273,39 +307,51 @@ k3s-status:
 	kubectl get pods -n data
 
 # --- Smoke tests ---
-BASE_URL := http://localhost
+#
+# План 08: в кластере наружу опубликованы только IngressRoute фронта (`/`) и
+# BFF (`/api`, `/ws`); у auth/core/commission `ingress.enabled: false`, и
+# NetworkPolicy пускает к ним только BFF. Поэтому цели ниже ходят через BFF
+# и пользуются cookie-сессией, а не `token` из тела (спека §3.1).
+BASE_URL     := http://localhost
+K3S_ORIGIN   ?= $(BASE_URL)
+K3S_COOKIES  ?= .k3s-smoke-cookies.txt
 
+# /health каждого сервиса в кластере проверяют readiness/liveness-пробы
+# (`kubectl get pods -n backend`, цель k3s-status), а не внешний маршрут:
+# такого маршрута больше нет и не должно быть. Снаружи проверяем ровно то,
+# что опубликовано — фронт отдаёт SPA, BFF отвечает на /api.
 k3s-test-health:
-	@echo "=== Health checks ==="
-	@curl -sf $(BASE_URL)/api/auth/health | python3 -m json.tool
-	@curl -sf $(BASE_URL)/api/core/health | python3 -m json.tool
-	@echo "All healthy!"
+	@echo "=== frontend (/) ===" && \
+	curl -s -o /dev/null -w "HTTP %{http_code}\n" $(BASE_URL)/
+	@echo "=== bff (/api/auth/me без сессии — ожидаем 401) ===" && \
+	curl -s -o /dev/null -w "HTTP %{http_code}\n" $(BASE_URL)/api/auth/me
+	@echo "Здоровье самих сервисов: make k3s-status (пробы), наружу его нет."
 
 k3s-test-auth:
 	@echo "=== Register ===" && \
-	curl -s -X POST $(BASE_URL)/api/auth/register \
-		-H 'Content-Type: application/json' \
+	curl -s -c $(K3S_COOKIES) -X POST $(BASE_URL)/api/auth/register \
+		-H 'Content-Type: application/json' -H 'Origin: $(K3S_ORIGIN)' \
 		-d '{"login":"testuser","password":"testpass123","name":"Test User","company_name":"ООО Тест","inn":"7710137066"}' | python3 -m json.tool && \
 	echo "" && \
-	echo "=== Login ===" && \
-	curl -s -X POST $(BASE_URL)/api/auth/login \
-		-H 'Content-Type: application/json' \
-		-d '{"login":"testuser","password":"testpass123"}' | python3 -m json.tool
+	echo "=== Login (токен уезжает в HttpOnly-cookie, не в тело) ===" && \
+	curl -s -c $(K3S_COOKIES) -X POST $(BASE_URL)/api/auth/login \
+		-H 'Content-Type: application/json' -H 'Origin: $(K3S_ORIGIN)' \
+		-d '{"login":"testuser","password":"testpass123"}' | python3 -m json.tool && \
+	echo "" && \
+	echo "=== Me (по cookie) ===" && \
+	curl -s -b $(K3S_COOKIES) $(BASE_URL)/api/auth/me | python3 -m json.tool
 
 k3s-test-core:
-	@echo "=== Login for token ===" && \
-	TOKEN=$$(curl -s -X POST $(BASE_URL)/api/auth/login \
-		-H 'Content-Type: application/json' \
-		-d '{"login":"testuser","password":"testpass123"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])") && \
-	echo "Token: $$TOKEN" && \
+	@echo "=== Login for session ===" && \
+	curl -s -c $(K3S_COOKIES) -o /dev/null -X POST $(BASE_URL)/api/auth/login \
+		-H 'Content-Type: application/json' -H 'Origin: $(K3S_ORIGIN)' \
+		-d '{"login":"testuser","password":"testpass123"}' && \
 	echo "" && \
-	echo "=== Create deal ===" && \
-	curl -s -X POST $(BASE_URL)/api/core/deals \
-		-H 'Content-Type: application/json' \
-		-H "Authorization: Bearer $$TOKEN" \
+	echo "=== Create deal (через BFF: /api/deals, не /api/core/deals) ===" && \
+	curl -s -b $(K3S_COOKIES) -X POST $(BASE_URL)/api/deals \
+		-H 'Content-Type: application/json' -H 'Origin: $(K3S_ORIGIN)' \
 		-d '{"counterparty_country":"CN","counterparty_name":"Trading Partner Co","operation_type":"import","amount":100000,"currency":"CNY"}' \
 		| python3 -m json.tool && \
 	echo "" && \
 	echo "=== List deals ===" && \
-	curl -s $(BASE_URL)/api/core/deals \
-		-H "Authorization: Bearer $$TOKEN" | python3 -m json.tool
+	curl -s -b $(K3S_COOKIES) $(BASE_URL)/api/deals | python3 -m json.tool

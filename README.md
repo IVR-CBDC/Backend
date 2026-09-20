@@ -41,21 +41,37 @@ make keys      # генерит RSA-пару (один раз)
 make up        # собирает и запускает всё
 ```
 
-Регистрация и логин:
+Регистрация и логин (через BFF — прямых путей `/api/auth`, `/api/core` за
+Traefik больше нет, спека §3). Нужен поднятый профиль `bff`:
 
 ```bash
-make test-register
-make test-login    # копируешь token из ответа
+docker compose --profile bff up -d --wait bff   # или make e2e-stand-up
 
-export TOKEN=<твой токен>
-make test-me
+make test-register
+make test-login    # токен уезжает в HttpOnly-cookie, не в тело ответа
+make test-me       # ходит по сохранённой cookie (.smoke-cookies.txt)
+make test-health   # /health сервисов — через host-порты dev-оверлея
+
+# Целям, которые ходят в сервисы мимо BFF по внутренней сети, Bearer всё
+# ещё нужен — токен достаётся из той же cookie:
+export TOKEN=$(make -s test-token)
 make smoke-commission
 make smoke-deal       # сквозная сделка: создать → сценарий → документы → эмулятор → completed
 make test-api         # pytest против поднятого стенда (EMULATOR_MANUAL=true)
 ```
 
-`make up` наружу отдаёт только traefik (порт 80) и его дашборд (8081) — так
-локальная топология совпадает с прод. Host-порты сервисов и БД (18080,
+`make up` наружу отдаёт только traefik (порт 80) — так локальная топология
+совпадает с прод. С плана 08 дашборд Traefik **выключен по умолчанию**
+(`api.insecure: false`, порт 8080 контейнера наружу не публикуется): сам
+ingress-контроллер не входит в список того, что торчит наружу (спека §3).
+Для демонстрации он включается отдельным оверлеем:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dashboard.yml up -d traefik
+# http://127.0.0.1:8081/dashboard/  (порт занят? TRAEFIK_DASHBOARD_PORT=18082 ...)
+```
+
+Host-порты сервисов и БД (18080,
 18081, 5433–5435, для тестов и ручной отладки) публикует только оверлей
 `docker-compose.dev.yml`, который `make test-api` и `make test-commission-db`
 подключают автоматически:
@@ -436,3 +452,23 @@ apt-пакетов в `cpp-base.Dockerfile` — изменения кода `ser
 6. Конфиги → `ConfigMap`
 
 Это **прямой 1:1 перенос** — структура compose специально такая, что мапится в k8s манифесты без переосмысления.
+
+### Периметр в k3s (план 08)
+
+- `IngressRoute` есть только у `bff` и `frontend`; у auth/core/commission
+  `ingress.enabled: false`. Внутренняя ручка эмулятора
+  `POST /internal/emulator/tick` (спека §4.3) в кластере не публикуется
+  вообще — e2e дёргают её только на compose-стенде через host-порт 18081
+  из `docker-compose.dev.yml`.
+- `NetworkPolicy` чарта пускает к сервису только поды из
+  `networkPolicy.allowFrom`: к auth и core — `bff`, к commission — `bff` и
+  `service-core`. Источники ищутся **в том же namespace** — `bff` обязан
+  жить в `backend` вместе с сервисами.
+- **Task 1 нельзя выкатывать без Task 2.** Пока в кластере нет пода `bff`
+  (`values-bff.yaml`), политика закрывает auth и core для всех, и это
+  выглядит как «сервисы не поднялись». Выкатывать периметр и BFF вместе.
+- Если после применения политики поды встают `Unhealthy` — первым делом
+  смотреть `networkPolicy.allowFromCIDRs`: на части CNI kubelet ходит в под
+  с адреса узла, и такой трафик надо разрешать подсетью узлов, а не
+  `namespaceSelector` (правила `kube-system` здесь намеренно нет — оно
+  пустило бы к сервисам ещё и Traefik, CoreDNS, metrics-server).
