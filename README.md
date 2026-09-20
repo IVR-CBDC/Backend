@@ -439,12 +439,18 @@ CD не устанавливает `pg-commission` и не удаляет ста
 service-commission в `main` выполнить руками на k3s-сервере:
 
 ```bash
-helm upgrade --install pg-commission oci://registry-1.docker.io/bitnamicharts/postgresql -n data \
-  --set auth.username=commission --set auth.password=commission --set auth.database=commission \
-  --set primary.persistence.size=1Gi
+make k3s-secrets      # пароли, если их ещё нет
+make k3s-deploy-data  # поднимет pg-auth/pg-core/pg-commission и redis
 helm uninstall service-test-python -n backend
 helm uninstall pg-test-python -n data
 ```
+
+**Литеральный `--set auth.password=commission` здесь больше не годится** (и
+раньше был источником того самого расхождения): пароль обязан совпадать с
+тем, что уезжает в Secret сервиса, а единственный его источник —
+`infra/helm/secrets-k3s.env`. Если `pg-commission` уже поднят со старым
+литералом, `make k3s-deploy-data` это заметит и остановится с объяснением:
+`helm upgrade` пароль в уже инициализированной базе не меняет.
 
 ## Тесты и CI
 
@@ -563,6 +569,35 @@ frontend — нет.
 
 `--wait` в обоих механизмах не косметика: без него `helm` возвращается сразу
 и последовательность перестаёт что-либо означать.
+
+### Проверки до выката (`infra/k3s-preflight.sh`)
+
+Один скрипт на оба механизма — его вызывают и `make k3s-deploy`, и
+`deploy.yml` по ssh. Все проверки идут **по всем строкам до первого
+`helm upgrade`**: обрыв посреди цикла оставил бы стенд наполовину
+обновлённым (auth новый, остальные старые), а это хуже, чем не начинать.
+
+Что проверяется:
+
+- **пароль задан** — локально в `secrets-k3s.env`, в CD в secrets
+  репозитория;
+- **пароль совпадает с тем, что в базе** — сверяется с Secret
+  `pg-<short>-postgresql`. Это единственный момент, когда обе стороны
+  известны одновременно; после `helm upgrade` первая теряется. Без
+  кластера проверка пропускается и прямо об этом говорит;
+- **тег bff/frontend не является неизменяемым.** `latest` хуже пустого
+  тега: `helm upgrade` с неизменившимся `image.tag` — no-op, новая сборка
+  фронта молча не выкатывается, а выкат считается успешным. Пока в
+  `frontend-tags.env` стоит заглушка `latest`, выкат **обрывается целиком**
+  — это отказ работать вхолостую, а не поломка. Для локального стенда:
+  `K3S_ALLOW_MUTABLE_TAGS=1`; в CD такого послабления нет.
+
+CD добавляет к этому свою проверку на раннере: `docker manifest inspect`
+каждого образа из `services.tsv` до первого `helm upgrade`. Путь образов
+bff и frontend (`image.repository` в их values) до первого dispatch из
+`alfa-cbdc-hub` ничем не подтверждён, а `ImagePullBackOff` посреди выката
+дороже отказа до его начала — тем более что по порядку фронт идёт
+последним.
 
 **Шестой сервис — одна строка в `infra/services.tsv`.** Колонки описаны в
 шапке файла: собирается ли образ здесь, нужен ли ему `BASE_IMAGE`, есть ли

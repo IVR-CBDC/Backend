@@ -2,7 +2,7 @@
        e2e-stand-up e2e-stand-down \
        new-cpp new-python k3s-install k3s-import-images k3s-setup \
        k3s-build k3s-deploy k3s-deploy-data up-k3s down-k3s k3s-status \
-       k3s-secrets k3s-secrets-check \
+       k3s-secrets k3s-secrets-check k3s-preflight \
        k3s-test-health k3s-test-auth k3s-test-core
 
 keys:
@@ -283,6 +283,14 @@ K3S_SERVICES         := $(shell $(TSV_ROWS) | awk '{print $$1}')
 K3S_BUILD_SERVICES   := $(shell $(TSV_ROWS) | awk '$$2=="yes" {print $$1}')
 K3S_MIGRATED_SERVICES := $(shell $(TSV_ROWS) | awk '$$4=="yes" {print $$1}')
 
+# Пустой или нечитаемый services.tsv не должен превращаться в тихий no-op.
+# Опаснее всего down-k3s: `helm uninstall -n backend` без аргументов — это
+# не «ничего не делать», это ошибка использования, которую легко не
+# заметить среди вывода. Ошибка здесь останавливает любую k3s-цель.
+ifeq ($(strip $(K3S_SERVICES)),)
+$(error $(SERVICES_TSV) пуст или нечитаем: список сервисов не прочитан. Ни одна k3s-цель работать не будет)
+endif
+
 # --- Секреты локального выката ---
 #
 # Один файл — один источник правды для ДВУХ мест, которые иначе разъезжаются
@@ -297,21 +305,30 @@ K3S_SECRETS_ENV ?= infra/helm/secrets-k3s.env
 # процент-кодирован — гвард чарта (generic-service.requireUrlUserinfoSafe)
 # такой пароль отвергает, и первый же честный выкат упирается в собственную
 # проверку. Здесь набор заведомо разрешённый: латиница и цифры.
+# Цель ДОПИСЫВАЕТ недостающие переменные и никогда не трогает уже
+# существующие: шестой сервис добавляется строкой в services.tsv и вызовом
+# этой цели, а пароли остальных при этом обязаны остаться прежними —
+# перегенерировать их значило бы разойтись с базой (ротация это отдельная
+# процедура, README).
 k3s-secrets:
-	@if [ -e $(K3S_SECRETS_ENV) ]; then \
-		echo "$(K3S_SECRETS_ENV) уже есть — не перезаписываю (ротация пароля это отдельная процедура, см. README)"; \
-	else \
-		umask 077; \
+	@set -eu; umask 077; \
+	if [ ! -e $(K3S_SECRETS_ENV) ]; then \
 		{ \
 		  echo "# Пароли БД для локального выката в k3s. НЕ КОММИТИТЬ."; \
-		  echo "# Сгенерировано 'make k3s-secrets'. Читают: k3s-deploy-data и k3s-deploy-%."; \
-		  for s in $(K3S_MIGRATED_SERVICES); do \
-		    v=$$($(TSV_ROWS) | awk -v s=$$s '$$1==s {print $$6}'); \
-		    echo "$$v=$$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"; \
-		  done; \
+		  echo "# Создано 'make k3s-secrets'. Читают: k3s-deploy-data,"; \
+		  echo "# k3s-deploy-% и infra/k3s-preflight.sh."; \
 		} > $(K3S_SECRETS_ENV); \
 		echo "создан $(K3S_SECRETS_ENV) (режим 600)"; \
-	fi
+	fi; \
+	for s in $(K3S_MIGRATED_SERVICES); do \
+		v=$$($(TSV_ROWS) | awk -v s=$$s '$$1==s {print $$6}'); \
+		if grep -q "^$$v=" $(K3S_SECRETS_ENV); then \
+			echo "$$v — уже есть, не трогаю"; \
+		else \
+			echo "$$v=$$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)" >> $(K3S_SECRETS_ENV); \
+			echo "$$v — сгенерирован"; \
+		fi; \
+	done
 
 k3s-secrets-check:
 	@test -f $(K3S_SECRETS_ENV) || { \
@@ -323,11 +340,20 @@ k3s-secrets-check:
 # --- Build & Push to local registry ---
 k3s-build-%:
 	@$(TSV_ROWS) | awk -v s=$* '$$1==s && $$2=="yes" {ok=1} END {exit !ok}' || { \
-		echo "$*: образ собирается не здесь." >&2; \
-		echo "bff и frontend живут в репозитории alfa-cbdc-hub; сюда они приезжают" >&2; \
-		echo "образами из ghcr, а теги — через infra/helm/frontend-tags.env, который" >&2; \
-		echo "пишет CD фронта. Локально: соберите образ там и запушьте в $(REGISTRY)," >&2; \
-		echo "затем 'make k3s-deploy-$*'." >&2; \
+		echo "$*: локальная сборка не поддерживается, и это не временно." >&2; \
+		echo "" >&2; \
+		echo "Dockerfile'а $* здесь нет — он живёт в репозитории alfa-cbdc-hub." >&2; \
+		echo "Сюда $* приезжает только образом из ghcr: путь задан в" >&2; \
+		echo "infra/helm/values-$*.yaml (image.repository), тег — в" >&2; \
+		echo "infra/helm/frontend-tags.env, который пишет CD фронта." >&2; \
+		echo "Поэтому 'make k3s-deploy-$*' тянет образ из ghcr, а не из" >&2; \
+		echo "$(REGISTRY): подсовывать туда локальную сборку бессмысленно," >&2; \
+		echo "values на локальный registry не смотрят. Для выката из ghcr в" >&2; \
+		echo "namespace backend нужен pull-секрет ghcr-secret (README)." >&2; \
+		echo "" >&2; \
+		echo "Локально правите фронт — поднимайте его в compose:" >&2; \
+		echo "docker-compose.override.yml.example собирает bff и frontend из" >&2; \
+		echo "соседнего каталога. k3s-стенд для этого не предназначен." >&2; \
 		exit 1; }
 	docker build -t $(REGISTRY)/$*:latest -f services/$*/Dockerfile .
 	docker push $(REGISTRY)/$*:latest
@@ -338,9 +364,13 @@ k3s-build: $(addprefix k3s-build-,$(K3S_BUILD_SERVICES))
 #
 # ВНИМАНИЕ: чарт bitnami/postgresql задаёт пароль только при ПЕРВОЙ
 # инициализации PVC. Повторный upgrade с другим auth.password оставляет в
-# базе старый пароль — а Secret сервиса поедет с новым. Это ровно то
-# расхождение, от которого спасает общий $(K3S_SECRETS_ENV): менять пароль
-# после первого выката = ALTER USER в базе или снос PVC, см. README.
+# базе старый пароль — а Secret и чарта, и сервиса поедут с новым, и выкат
+# при этом будет «успешным». Поэтому расхождение ловится ЗДЕСЬ, до
+# upgrade: если в кластере уже есть Secret pg-<short>-postgresql и пароль в
+# нём не тот, что в $(K3S_SECRETS_ENV), цель обрывается. Момент выбран не
+# случайно — только сейчас известны обе стороны: что в базе (старый Secret
+# соответствует тому, чем PVC инициализировали) и что мы собираемся
+# поставить. После upgrade первая сторона теряется.
 k3s-deploy-data: k3s-secrets-check
 	@set -eu; . ./$(K3S_SECRETS_ENV); \
 	for s in $(K3S_MIGRATED_SERVICES); do \
@@ -348,6 +378,22 @@ k3s-deploy-data: k3s-secrets-check
 		v=$$($(TSV_ROWS) | awk -v s=$$s '$$1==s {print $$6}'); \
 		eval "pw=\$${$$v-}"; \
 		test -n "$$pw" || { echo "$$v не задан в $(K3S_SECRETS_ENV)" >&2; exit 1; }; \
+		cur=$$(kubectl get secret pg-$$short-postgresql -n data \
+			-o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || true); \
+		if [ -n "$$cur" ] && [ "$$cur" != "$$pw" ]; then \
+			echo "pg-$$short: пароль в кластере НЕ совпадает с $$v из $(K3S_SECRETS_ENV)." >&2; \
+			echo "" >&2; \
+			echo "helm upgrade это НЕ починит: bitnami/postgresql задаёт пароль только" >&2; \
+			echo "при первой инициализации PVC. Он поменяет Secret, база останется со" >&2; \
+			echo "старым паролем, и под сервиса получит password authentication failed" >&2; \
+			echo "ПОСЛЕ успешного выката — искать это будут долго." >&2; \
+			echo "" >&2; \
+			echo "Варианты:" >&2; \
+			echo "  1) привести $$v в $(K3S_SECRETS_ENV) к тому, что в базе;" >&2; \
+			echo "  2) ALTER USER $$short WITH PASSWORD '<новый>' в самой базе, потом сюда;" >&2; \
+			echo "  3) снести релиз pg-$$short и его PVC, если данные не жалко." >&2; \
+			exit 1; \
+		fi; \
 		echo "=== pg-$$short ==="; \
 		helm upgrade --install pg-$$short oci://registry-1.docker.io/bitnamicharts/postgresql \
 			-n data --create-namespace \
@@ -378,13 +424,11 @@ k3s-deploy-%:
 	mig=$$(echo "$$row" | awk '{print $$4}'); \
 	tagsrc=$$(echo "$$row" | awk '{print $$5}'); \
 	pwvar=$$(echo "$$row" | awk '{print $$6}'); \
+	if [ -f $(K3S_SECRETS_ENV) ]; then set -a; . ./$(K3S_SECRETS_ENV); set +a; fi; \
+	sh infra/k3s-preflight.sh $(SERVICES_TSV) $*; \
 	values=infra/helm/values-$*.yaml; \
 	short=$*; short=$${short#service-}; \
 	if [ "$$pwvar" != "-" ]; then \
-		test -f $(K3S_SECRETS_ENV) || { \
-			echo "нет $(K3S_SECRETS_ENV) — выполните 'make k3s-secrets'." >&2; \
-			echo "Без пароля чарт падает на рендере намеренно (fail-closed, Task 2)." >&2; \
-			exit 1; }; \
 		pg_host=pg-$$short-postgresql.data.svc.cluster.local; \
 		pg_ip=$$(kubectl get svc pg-$$short-postgresql -n data -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true); \
 		if [ -n "$$pg_ip" ]; then \
@@ -401,22 +445,26 @@ k3s-deploy-%:
 	if [ "$$tagsrc" != sha ]; then \
 		. ./infra/helm/frontend-tags.env; \
 		eval "tag=\$${$$tagsrc-}"; \
-		test -n "$$tag" || { echo "$$tagsrc пуст в infra/helm/frontend-tags.env" >&2; exit 1; }; \
 		set -- "$$@" --set-string image.tag="$$tag"; \
 	fi; \
 	if [ "$$pwvar" != "-" ]; then \
-		. ./$(K3S_SECRETS_ENV); \
 		eval "pw=\$${$$pwvar-}"; \
-		test -n "$$pw" || { echo "$$pwvar не задан в $(K3S_SECRETS_ENV)" >&2; exit 1; }; \
 		set -- "$$@" --set-string secrets.data.dbPassword="$$pw"; \
 	fi; \
 	echo "=== helm upgrade $* ==="; \
 	helm upgrade --install $* $(HELM_CHART) "$$@" --wait --timeout 5m -n backend
 
+# Все проверки по всем строкам — до первого helm upgrade. Обрыв посреди
+# цикла оставил бы стенд в смешанном состоянии: auth уже обновлён, остальные
+# нет, и это хуже, чем не начинать.
+k3s-preflight: k3s-secrets-check
+	@set -eu; set -a; . ./$(K3S_SECRETS_ENV); set +a; \
+	sh infra/k3s-preflight.sh $(SERVICES_TSV)
+
 # Последовательно и в порядке файла, а не через список зависимостей:
 # зависимости make под `-j` выполняются параллельно, а порядок
 # auth → bff → frontend обязателен (см. шапку infra/services.tsv).
-k3s-deploy: k3s-deploy-data
+k3s-deploy: k3s-deploy-data k3s-preflight
 	@set -e; for s in $(K3S_SERVICES); do $(MAKE) --no-print-directory k3s-deploy-$$s; done
 
 # --- Full cycle ---

@@ -24,6 +24,7 @@ jobs:
       images: ${{ steps.plan.outputs.images }}
       sha-tag: ${{ steps.plan.outputs.sha-tag }}
       repo-lc: ${{ steps.plan.outputs.repo-lc }}
+      built-at: ${{ steps.plan.outputs.built-at }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,6 +51,11 @@ jobs:
           # CamelCase-именем), а чинить постфактум для уже запушенных тегов
           # сложнее, чем один раз привести явно.
           echo "repo-lc=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+          # Один момент времени на все образы прогона: иначе
+          # org.opencontainers.image.created у auth и core отличался бы на
+          # время сборки и перестал бы означать «собрано из этого коммита».
+          echo "built-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Показать план
         run: |
@@ -99,6 +105,11 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}/ivr-cpp-base:latest
             ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}/ivr-cpp-base:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ needs.plan.outputs.built-at }}
+            org.opencontainers.image.title=ivr-cpp-base
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -138,7 +149,28 @@ jobs:
           context: .
           file: services/${{ matrix.service.name }}/Dockerfile
           push: true
-          tags: ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}/${{ matrix.service.name }}:${{ needs.plan.outputs.sha-tag }}
+          # Два тега. sha-<7> — то, чем выкатывается стенд: он фиксирует
+          # содержимое, и именно его подставляет deploy.
+          # :${{ github.ref_name }} (на этом workflow — всегда `main`) —
+          # плавающий тег для CI фронт-репозитория: тот тянет backend-образы
+          # вместо пересборки C++ на каждом PR (долг плана 07), но sha
+          # Backend не знает и знать не может. Выкат этим тегом НЕ
+          # пользуется: `helm upgrade` с неизменившимся тегом был бы no-op.
+          tags: |
+            ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}/${{ matrix.service.name }}:${{ needs.plan.outputs.sha-tag }}
+            ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}/${{ matrix.service.name }}:${{ github.ref_name }}
+          # OCI-метки. Без image.source пакет в ghcr не связывается с
+          # репозиторием: в интерфейсе он висит сиротой, и по образу из
+          # кластера нельзя дойти до коммита, из которого он собран.
+          # Раньше их проставлял docker/metadata-action; после перехода на
+          # явные теги метки пропали вместе с ним.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.sha-tag }}
+            org.opencontainers.image.created=${{ needs.plan.outputs.built-at }}
+            org.opencontainers.image.title=${{ matrix.service.name }}
           # BASE_IMAGE передаётся только тем, у кого в services.tsv
           # cpp-base=yes: у service-commission такого build-arg в Dockerfile
           # нет, и безусловная передача давала бы предупреждение buildkit на
@@ -167,9 +199,58 @@ jobs:
   deploy:
     needs: [plan, images]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Единственная доступная отсюда защита от класса ошибок «путь образа
+      # никто не проверял»: репозиторий bff и frontend задан в values Task 2
+      # и до первого dispatch из alfa-cbdc-hub ничем не подтверждён.
+      # ImagePullBackOff посреди выката дороже отказа до его начала: часть
+      # релизов уже обновлена, часть нет, а порядок auth → bff → frontend
+      # означает, что упасть может именно фронт — последним.
+      #
+      # Проверка живёт на раннере, а не на сервере выката: здесь есть docker
+      # и выполнен login в ghcr. На сервере k3s работает через containerd, и
+      # docker там может отсутствовать вовсе.
+      - name: Pre-flight — образы существуют в реестре
+        env:
+          SHA_TAG: ${{ needs.plan.outputs.sha-tag }}
+          IMAGE_PREFIX: ${{ env.REGISTRY }}/${{ needs.plan.outputs.repo-lc }}
+        run: |
+          set -euo pipefail
+          . ./infra/helm/frontend-tags.env
+          awk '!/^[[:space:]]*#/ && NF' infra/services.tsv > /tmp/rows
+          fail=0
+          while read -r name build cppbase mig tagsrc pwvar; do
+            if [ "$tagsrc" = sha ]; then
+              ref="$IMAGE_PREFIX/$name:$SHA_TAG"
+            else
+              eval "tag=\${$tagsrc-}"
+              # repository для bff и frontend задан в values, а не здесь:
+              # читаем оттуда же, откуда его возьмёт helm.
+              repo=$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["image"]["repository"])' \
+                     "infra/helm/values-${name}.yaml")
+              ref="$repo:$tag"
+            fi
+            if docker manifest inspect "$ref" > /dev/null 2>&1; then
+              echo "ok   $name -> $ref"
+            else
+              echo "::error::$name: образа $ref нет в реестре или он недоступен этому токену"
+              fail=1
+            fi
+          done < /tmp/rows
+          [ "$fail" -eq 0 ]
 
       - name: Generate migration values
         run: |
@@ -189,7 +270,7 @@ jobs:
           port: 27373
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          source: "infra/helm,infra/services.tsv"
+          source: "infra/helm,infra/services.tsv,infra/k3s-preflight.sh"
           target: "~/deploy-ivr"
 
       - name: Deploy to k3s via SSH
@@ -230,6 +311,20 @@ jobs:
             # git, а не по тому, что сейчас лежит под :latest.
             . ./frontend-tags.env
 
+            # ПЕРВЫЙ ПРОХОД — проверки по ВСЕМ строкам, до первого
+            # helm upgrade. Обрыв посреди цикла оставил бы стенд в смешанном
+            # состоянии: auth уже обновлён, остальные нет. Тот же скрипт
+            # вызывает Makefile — два набора проверок разъехались бы так же
+            # молча, как разъезжались два списка сервисов.
+            #
+            # Скрипт проверяет: заданы ли пароли, не является ли тег
+            # bff/frontend неизменяемым (`latest` — no-op выката, хуже
+            # пустого тега) и совпадает ли пароль с тем, что лежит в Secret
+            # pg-<short>-postgresql (расхождение = password authentication
+            # failed ПОСЛЕ успешного выката).
+            sh ~/deploy-ivr/infra/k3s-preflight.sh ~/deploy-ivr/infra/services.tsv
+
+            # ВТОРОЙ ПРОХОД — собственно выкат.
             # Список кладётся в файл, а не подаётся в цикл конвейером: тело
             # цикла в конвейере выполняется в подоболочке, и `exit 1` из
             # него оборвал бы только её, а не выкат.
@@ -246,24 +341,15 @@ jobs:
                 set -- "$@" --set-string "image.repository=$IMAGE_PREFIX/$name" \
                             --set-string "image.tag=$SHA_TAG"
               else
-                eval "tag=\${$tagsrc-}"
-                if [ -z "$tag" ]; then
-                  echo "$name: $tagsrc пуст в frontend-tags.env" >&2
-                  exit 1
-                fi
                 # repository для bff и frontend задан в values (ghcr фронта),
-                # здесь переопределяется только тег.
+                # здесь переопределяется только тег. Непустоту и
+                # неизменяемость тега проверил первый проход.
+                eval "tag=\${$tagsrc-}"
                 set -- "$@" --set-string "image.tag=$tag"
               fi
 
               if [ "$pwvar" != "-" ]; then
                 eval "pw=\${$pwvar-}"
-                if [ -z "$pw" ]; then
-                  echo "$name: секрет $pwvar не задан в настройках репозитория." >&2
-                  echo "Чарт падает на рендере намеренно (fail-closed): пустой пароль" >&2
-                  echo "молча выкатил бы сервис, который не может подключиться к БД." >&2
-                  exit 1
-                fi
                 set -- "$@" --set-string "secrets.data.dbPassword=$pw"
               fi
 

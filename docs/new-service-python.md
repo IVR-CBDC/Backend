@@ -185,10 +185,29 @@ jwtKeys:
   mountPath: /etc/keys
 
 env:
-  - name: PG_DSN
-    value: "postgresql+asyncpg://<name>:<name>@pg-<name>-postgresql.data.svc.cluster.local:5432/<name>"
   - name: JWT_PUBLIC_KEY_PATH
     value: /etc/keys/jwt_public.pem
+
+# PG_DSN целиком уезжает в Secret: пароль там — часть строки подключения, и
+# «вынести только пароль» нельзя, не собирая DSN внутри сервиса.
+envSecret:
+  - name: PG_DSN
+    key: pgDsn
+
+# secrets.data — сырые данные (приезжают снаружи как есть, через tpl НЕ
+# проходят), secrets.derived — шаблоны, написанные здесь, в репозитории.
+# Снаружи передаётся ОДИН пароль, DSN выводится из него: два независимых
+# --set с одним паролем внутри разъехались бы при первой ротации молча.
+#
+# requireUrlUserinfoSafe: пароль попадает в userinfo URL, и символ вроде
+# `@`, `/`, `#`, `?` или `:` сместил бы границы разбора строки подключения —
+# asyncpg увидел бы другой хост, а Secret выглядел бы правильным.
+secrets:
+  enabled: true
+  data:
+    dbPassword: ""
+  derived:
+    pgDsn: "postgresql+asyncpg://<name>:{{ required `secrets.data.dbPassword обязателен для service-<name>` .Values.secrets.data.dbPassword | include `generic-service.requireUrlUserinfoSafe` }}@pg-<name>-postgresql.data.svc.cluster.local:5432/<name>"
 
 migrations:
   enabled: true
@@ -198,17 +217,38 @@ migrations:
     port: "5432"
     name: <name>
     user: <name>
-    password: <name>
+    # Тот же Secret, что у сервиса: иначе секрет защищал бы половину пути.
+    passwordSecretKey: dbPassword
 
+# Наружу НЕ публикуется (спека §3, план 08): снаружи видны только frontend
+# и bff.
 ingress:
-  enabled: true
-  match: "PathPrefix(`/api/<name>`)"
+  enabled: false
 
 cors:
   enabled: false
 
 networkPolicy:
   enabled: true
+  # Явный список источников, а не «весь namespace» (ADR 0006).
+  allowFrom:
+    - app.kubernetes.io/name: bff
+
+podSecurityContext:
+  runAsNonRoot: true
+  # Явный числовой uid обязателен: нечисловой `USER app` в образе kubelet
+  # доказательством «не root» не считает и контейнер не стартует.
+  runAsUser: 1000
+  runAsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 healthcheck:
   path: /health
@@ -220,20 +260,42 @@ service-<name>` генерирует `infra/helm/generated/migrations-service-<n
 Makefile (`k3s-deploy-%`) и `.github/workflows/deploy.yml` передают его как дополнительный `-f`
 при `helm upgrade`.
 
-## 6. Регистрация в Makefile
+## 6. Регистрация в `infra/services.tsv`
 
-В `K3S_SERVICES` добавь:
-```makefile
-K3S_SERVICES := service-auth service-core service-commission service-<name>
+**Makefile и `deploy.yml` править не надо.** Список сервисов, порядок выката и
+свойства каждого сервиса живут в одном файле — `infra/services.tsv`. Его
+читают k3s-цели Makefile, `deploy.yml` (матрица сборки и цикл выката) и
+джоба `helm` в `ci.yml`. Второй список — второй источник правды, который
+разъедется при первой правке.
+
+Добавь строку (колонки описаны в шапке файла):
+
+```
+service-<name>        yes    no        yes         sha                 DB_PASSWORD_<NAME>
 ```
 
-В `k3s-deploy-data` добавь PG:
-```makefile
-helm upgrade --install pg-<name> oci://registry-1.docker.io/bitnamicharts/postgresql \
-    -n data \
-    --set auth.username=<name> --set auth.password=<name> --set auth.database=<name> \
-    --set primary.persistence.size=1Gi
+`cpp-base=no` — Python-образ не собирается от `ivr-cpp-base`.
+
+**Место строки — это порядок выката.** Новый сервис ставь среди `service-*`,
+до `bff`: bff падает при старте, если недоступен auth, а frontend — если
+недоступен bff (README, «Порядок выката»).
+
+PG поднимется сам: `k3s-deploy-data` идёт по строкам с `migrations=yes` и
+берёт пароль из той же переменной. **Отдельный блок `helm upgrade --install
+pg-<name> … --set auth.password=<name>` дописывать не надо и нельзя** —
+литеральный пароль в цели и был той второй точкой правды, из-за которой
+чарт и база расходились молча.
+
+Пароль создаётся один раз:
+
+```bash
+make k3s-secrets    # допишет DB_PASSWORD_<NAME> в infra/helm/secrets-k3s.env
 ```
+
+Файл в git не попадает; в CD заведи одноимённый secret репозитория.
+Генерируется пароль из `[A-Za-z0-9]` — `openssl rand -base64` даёт `/`,
+который гвард userinfo отвергает (ADR 0007). Для Python-сервиса это
+особенно важно: его пароль попадает в DSN.
 
 ## 7. Отличия от C++ сервиса
 
