@@ -10,6 +10,7 @@ import re
 import time
 
 import httpx
+import pytest
 
 from conftest import outbox_published_event
 
@@ -337,3 +338,47 @@ def test_garbage_token_returns_401_invalid_token(core_url: str):
 
     assert resp.status_code == 401
     assert resp.json()["code"] == "INVALID_TOKEN"
+
+
+# Тот же дефект «ответ раньше COMMIT», что и в test_auth_commit.py, но на
+# стороне сделок: DealRepository::create() возвращает DealDetail, пока его
+# транзакция ещё жива, и 201 с телом сделки может обогнать её COMMIT.
+# Следующий GET берёт из пула другое соединение и под READ COMMITTED видит
+# 404 на только что «созданную» сделку. Ни пауз, ни ретраев здесь нет
+# намеренно: окно измеряется миллисекундами, и любой sleep его спрячет.
+CREATE_THEN_READ_ATTEMPTS = 15
+
+
+@pytest.mark.parametrize("attempt", range(CREATE_THEN_READ_ATTEMPTS))
+def test_created_deal_is_readable_immediately(core_url: str, company: dict, attempt: int):
+    # Один keep-alive клиент на POST и GET — без него между ними встаёт
+    # TCP-рукопожатие, которого хватает, чтобы COMMIT успел долететь, и
+    # тест зеленеет на сломанном коде (проверено: с новым соединением на
+    # каждый запрос 0 из 45, с keep-alive — 55 из 60 падений).
+    with httpx.Client(
+        base_url=core_url, timeout=10.0, headers=auth_headers(company["token"])
+    ) as client:
+        created = client.post(
+            "/api/core/deals",
+            json={
+                "counterparty_country": "CN",
+                "counterparty_name": "Trading Partner Co",
+                "operation_type": "import",
+                "amount": 100000,
+                "currency": "CNY",
+            },
+        )
+        assert created.status_code == 201, created.text
+        deal = created.json()["deal"]
+
+        # Никаких пауз и ретраев между запросами — в этом весь смысл теста.
+        resp = client.get("/api/core/deals/{}".format(deal["id"]))
+
+    assert resp.status_code == 200, (
+        "GET сразу после создания получил {}: 201 ушёл раньше COMMIT "
+        "транзакции create(). Тело: {}".format(resp.status_code, resp.text)
+    )
+    fetched = resp.json()["deal"]
+    assert fetched["id"] == deal["id"]
+    assert fetched["stage"] == "created"
+    assert fetched["version"] == deal["version"]
