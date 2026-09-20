@@ -42,8 +42,13 @@ envSecret:
 # стенд, README).
 secrets:
   enabled: true
+  # Сырое значение: приезжает снаружи как есть, шаблоном не обрабатывается.
   data:
     dbPassword: ""
+  # Выводимое: шаблон написан здесь, в репозитории, и раскрывается при
+  # рендере. Пароль в него подставляется, но сам шаблоном не считается —
+  # пароль с `{{` внутри ни рендер не уронит, ни подставится молча.
+  derived:
     pgDsn: "postgresql+asyncpg://commission:{{ required `secrets.data.dbPassword обязателен для service-commission: из него собирается pgDsn` .Values.secrets.data.dbPassword }}@pg-commission-postgresql.data.svc.cluster.local:5432/commission"
 
 migrations:

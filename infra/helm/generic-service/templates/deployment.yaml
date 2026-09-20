@@ -11,17 +11,26 @@
   и выглядит как «под не стартует», а не как «забыли --set».
 */ -}}
 {{- $data := .Values.secrets.data | default dict -}}
+{{- $derived := .Values.secrets.derived | default dict -}}
+{{- $inSecret := keys (merge (dict) $data $derived) | sortAlpha -}}
 {{- if .Values.migrations.enabled }}
 {{- $mk := required "migrations.enabled=true требует migrations.db.passwordSecretKey — имя ключа в Secret релиза. Пустое значение оставило бы init-контейнер с пустым DB_PASSWORD." .Values.migrations.db.passwordSecretKey }}
-{{- if not (hasKey $data $mk) }}
-{{- fail (printf "migrations.db.passwordSecretKey=%q, но ключа %q нет в secrets.data (есть: %v). Kubelet не ошибётся при apply — под встанет в CreateContainerConfigError. Передайте --set secrets.data.%s=... или исправьте имя ключа." $mk $mk (keys $data) $mk) }}
+{{- if not (has $mk $inSecret) }}
+{{- fail (printf "migrations.db.passwordSecretKey=%q, но ключа %q нет ни в secrets.data, ни в secrets.derived (есть: %v). Kubelet не ошибётся при apply — под встанет в CreateContainerConfigError. Передайте --set secrets.data.%s=... или исправьте имя ключа." $mk $mk $inSecret $mk) }}
 {{- end }}
 {{- end }}
 {{- range .Values.envSecret }}
+{{- include "generic-service.checkEnvName" (dict "name" .name "where" "envSecret") }}
 {{- $ek := required (printf "envSecret[%s].key обязателен: без ключа переменная молча приехала бы пустой" .name) .key }}
-{{- if not (hasKey $data $ek) }}
-{{- fail (printf "envSecret %q ссылается на ключ %q, которого нет в secrets.data (есть: %v). На кластере это CreateContainerConfigError, а не ошибка apply." .name $ek (keys $data)) }}
+{{- if not (has $ek $inSecret) }}
+{{- fail (printf "envSecret %q ссылается на ключ %q, которого нет ни в secrets.data, ни в secrets.derived (есть: %v). На кластере это CreateContainerConfigError, а не ошибка apply." .name $ek $inSecret) }}
 {{- end }}
+{{- end }}
+{{- range $name, $value := .Values.envMap }}
+{{- include "generic-service.checkEnvName" (dict "name" $name "where" "envMap") }}
+{{- end }}
+{{- range .Values.env }}
+{{- include "generic-service.checkEnvName" (dict "name" .name "where" "env") }}
 {{- end }}
 {{- if and (or .Values.envSecret .Values.migrations.enabled) (not .Values.secrets.enabled) }}
 {{- fail "есть ссылки на Secret релиза (envSecret или миграции), но secrets.enabled=false — Secret просто не отрендерится, и под встанет в CreateContainerConfigError." }}
@@ -54,7 +63,9 @@ spec:
         checksum/migrations: {{ include (print $.Template.BasePath "/migrations-configmap.yaml") . | sha256sum }}
         {{- end }}
         {{- if .Values.secrets.enabled }}
-        checksum/secrets: {{ .Values.secrets.data | toYaml | sha256sum }}
+        # И сырые, и выводимые: смена пароля меняет data, правка шаблона
+        # DSN — derived, и то и другое обязано перезапускать под.
+        checksum/secrets: {{ dict "data" (.Values.secrets.data | default dict) "derived" (.Values.secrets.derived | default dict) | toYaml | sha256sum }}
         {{- end }}
         {{- if .Values.config.enabled }}
         checksum/config: {{ tpl (.Values.config.json | toPrettyJson) . | sha256sum }}

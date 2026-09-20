@@ -31,7 +31,10 @@ config:
         # Пароль не литерал: подставляется из Secret релиза при рендере.
         # Обратные кавычки обязательны — см. комментарий к config.json в
         # values чарта (toPrettyJson экранировал бы двойные).
-        passwd: "{{ required `secrets.data.dbPassword обязателен для service-auth: передайте --set secrets.data.dbPassword=... (CD) или -f файлом вне git` .Values.secrets.data.dbPassword }}"
+        # jsonEscape обязателен: подстановка попадает внутрь кавычек, которые
+        # поставил toPrettyJson, и пароль с двойной кавычкой без него разорвал
+        # бы JSON — Drogon получил бы битый конфиг и не стартовал.
+        passwd: "{{ required `secrets.data.dbPassword обязателен для service-auth: передайте --set secrets.data.dbPassword=... (CD) или -f файлом вне git` .Values.secrets.data.dbPassword | include `generic-service.jsonEscape` }}"
         is_fast: false
         connection_number: 4
 
