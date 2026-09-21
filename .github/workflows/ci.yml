@@ -50,6 +50,41 @@ jobs:
       - name: traefik configs in sync
         run: bash infra/check-traefik-configs.sh
 
+      # Workflow-файлы GitHub не проверяет до тех пор, пока не попытается их
+      # выполнить, — а сломанный файл он отвергает молча: workflow помечается
+      # именем своего пути вместо `name:`, и прогон падает за 0 секунд с
+      # «likely failed because of a workflow file issue».
+      #
+      # Проверять здесь `yaml.safe_load` БЕЗ проверки формы бесполезно, и это
+      # не теория: именно так frontend-tags.yml уехал в main сломанным.
+      # Многострочное сообщение `git commit -m "…"` внутри блочного скаляра
+      # `run:` начиналось с нулевой колонки — его продолжения вывалились из
+      # блока и стали ключами верхнего уровня («Источник», «Прогон»).
+      # `safe_load` при этом отработал успешно: файл разобрался, просто не в
+      # то. Поэтому проверяется НАБОР ключей, а не сам факт разбора.
+      - name: workflows are valid
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys, yaml
+          ALLOWED = {"name", "on", True, "jobs", "permissions",
+                     "concurrency", "env", "defaults", "run-name"}
+          bad = False
+          for path in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
+              doc = yaml.safe_load(path.read_text())
+              if not isinstance(doc, dict):
+                  print(f"{path}: не YAML-словарь"); bad = True; continue
+              # `on:` в YAML 1.1 читается как булево True — это нормально.
+              extra = set(doc) - ALLOWED
+              if extra:
+                  print(f"{path}: посторонние ключи верхнего уровня: {sorted(map(str, extra))}")
+                  bad = True
+              if "jobs" not in doc or not doc["jobs"]:
+                  print(f"{path}: нет ни одной job"); bad = True
+              if "on" not in doc and True not in doc:
+                  print(f"{path}: нет триггера on:"); bad = True
+          sys.exit(1 if bad else 0)
+          PY
+
   # ============================================================
   # helm (F4, final review): чарт до сих пор не проверялся ни одной джобой,
   # а infra/gen-migration-values.sh течёт в него через values — поломка

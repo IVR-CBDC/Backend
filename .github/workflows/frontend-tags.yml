@@ -125,9 +125,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add infra/helm/frontend-tags.env
-          git commit -m "chore(deploy): теги образов фронта bff=$BFF_TAG frontend=$FRONTEND_TAG
-
-Автоматический коммит: repository_dispatch из alfa-cbdc-hub.
-Источник: ${SOURCE_SHA:-неизвестен}
-Прогон:   ${SOURCE_RUN:-неизвестен}"
+          # Каждый -m становится отдельным абзацем сообщения. Многострочная
+          # строка здесь не годится: её продолжения оказались бы в нулевой
+          # колонке, вывалились бы из блочного скаляра `run:` и стали ключами
+          # верхнего уровня YAML — workflow перестаёт быть валидным, а
+          # `yaml.safe_load` этого не замечает, потому что файл всё ещё
+          # разбирается (просто не в то). Так и случилось в первой версии.
+          git commit \
+            -m "chore(deploy): теги образов фронта bff=$BFF_TAG frontend=$FRONTEND_TAG" \
+            -m "Автоматический коммит: repository_dispatch из alfa-cbdc-hub." \
+            -m "Источник: ${SOURCE_SHA:-неизвестен}" \
+            -m "Прогон:   ${SOURCE_RUN:-неизвестен}"
           git push
