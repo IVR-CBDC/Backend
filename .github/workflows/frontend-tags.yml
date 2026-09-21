@@ -21,18 +21,27 @@ name: Frontend image tags
 # изменений не видна в diff, откат делается не `git revert`, а руками в
 # настройках. Файл в репозитории даёт и то, и другое бесплатно.
 #
-# ПОЧЕМУ ЭТОТ КОММИТ НЕ ЗАПУСКАЕТ CD САМ ПО СЕБЕ. Пуш ботом с
-# `secrets.GITHUB_TOKEN` намеренно не триггерит workflow (защита GitHub от
-# рекурсии), поэтому deploy.yml после него не стартует. Это правильное
-# поведение по умолчанию — выкат фронта не должен случаться от того, что
-# кто-то смержил PR в другом репозитории, — но знать об этом надо: чтобы
-# выкатить новые теги, нужен push в main здесь (или `workflow_dispatch`
-# deploy.yml, если он будет добавлен).
+# ПОЧЕМУ PR, А НЕ ПРЯМОЙ PUSH В MAIN. Первая версия пушила в main напрямую.
+# После включения защиты ветки (обязательные проверки CI) такой push
+# отклоняется: у `GITHUB_TOKEN` нет прав админа, а обходить защиту ботом —
+# значит сделать её декоративной. Поэтому бот отводит ветку
+# `bot/frontend-tags` и открывает PR; ветка одна и переиспользуется, так что
+# повторный dispatch обновляет открытый PR, а не плодит новые.
 #
-# ЧЕСТНО: здесь этот workflow не выполнялся и выполниться не может — у
-# репозитория нет remote, dispatch присылать неоткуда. Проверен разбором
-# YAML и локальным прогоном самой логики записи файла (скрипт шага ниже
-# выполнен руками в скретчпаде на тех же входных данных).
+# ВАЖНОЕ СЛЕДСТВИЕ: на PR, открытом `GITHUB_TOKEN`, проверки CI НЕ появятся —
+# события от этого токена намеренно не запускают workflow (защита GitHub от
+# рекурсии). А раз проверки обязательны, смёржить такой PR получится только
+# обходом (владелец репозитория это может, `enforce_admins: false`).
+# Чинится секретом `BOT_TOKEN` с правами `repo`: и checkout, и `gh` берут
+# его автоматически, если он заведён, и тогда PR получает настоящие
+# проверки. Без секрета всё работает, кроме этого.
+#
+# ПОЧЕМУ МЁРЖ PR НЕ ЗАПУСКАЕТ CD САМ ПО СЕБЕ — по той же причине, если мёржит
+# бот. Мёрж человеком — обычный push в main, и `deploy.yml` стартует штатно.
+#
+# ЧЕСТНО: здесь этот workflow ни разу не выполнялся — dispatch присылать
+# пока неоткуда (CI фронт-репозитория не публиковал образы). Проверен
+# разбором YAML и прогоном логики записи файла на тех же входных данных.
 
 on:
   repository_dispatch:
@@ -42,11 +51,16 @@ jobs:
   update-tags:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write        # запушить ветку bot/frontend-tags
+      pull-requests: write   # открыть/обновить PR
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
+          # Токеном checkout'а потом идёт push ветки. BOT_TOKEN, если он
+          # заведён, даёт PR настоящие проверки CI (см. шаг с PR ниже);
+          # без него берётся GITHUB_TOKEN и всё работает, кроме этого.
+          token: ${{ secrets.BOT_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Validate payload
         env:
@@ -110,8 +124,9 @@ jobs:
             infra/helm/frontend-tags.env
           grep -E '^(BFF|FRONTEND)_IMAGE_TAG=' infra/helm/frontend-tags.env
 
-      - name: Commit if changed
+      - name: Open or update pull request
         env:
+          GH_TOKEN: ${{ secrets.BOT_TOKEN || secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
           SOURCE_RUN: ${{ github.event.client_payload.source_run }}
           BFF_TAG: ${{ github.event.client_payload.bff_tag }}
@@ -119,11 +134,14 @@ jobs:
         run: |
           set -euo pipefail
           if git diff --quiet -- infra/helm/frontend-tags.env; then
-            echo "теги не изменились — коммитить нечего (повторный dispatch на тот же коммит)"
+            echo "теги не изменились — PR не нужен (повторный dispatch на тот же коммит)"
             exit 0
           fi
+
+          branch=bot/frontend-tags
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
           git add infra/helm/frontend-tags.env
           # Каждый -m становится отдельным абзацем сообщения. Многострочная
           # строка здесь не годится: её продолжения оказались бы в нулевой
@@ -136,4 +154,44 @@ jobs:
             -m "Автоматический коммит: repository_dispatch из alfa-cbdc-hub." \
             -m "Источник: ${SOURCE_SHA:-неизвестен}" \
             -m "Прогон:   ${SOURCE_RUN:-неизвестен}"
-          git push
+
+          # Ветка одна и переиспользуется: повторный dispatch обновляет уже
+          # открытый PR, а не плодит новые. force — потому что ветка каждый
+          # раз отводится заново от свежего main.
+          git push --force origin "$branch"
+
+          if [ "$(gh pr view "$branch" --json state --jq .state 2>/dev/null || true)" = OPEN ]; then
+            echo "PR уже открыт — push обновил его."
+            gh pr view "$branch" --json url --jq .url
+            exit 0
+          fi
+
+          # Тело PR — через heredoc в файл, а не многострочным аргументом:
+          # внутри блочного скаляра `run:` каждая строка обязана оставаться
+          # с общим отступом. Markdown-таблица, начатая с нулевой колонки,
+          # вываливается из блока — ровно та ошибка, что уже ломала этот
+          # файл однажды. Здесь все строки внутри, YAML снимет общий отступ.
+          cat > "$RUNNER_TEMP/pr-body.md" <<EOF
+          Автоматический PR: \`repository_dispatch\` из \`alfa-cbdc-hub\`.
+
+          | | |
+          |---|---|
+          | bff | \`$BFF_TAG\` |
+          | frontend | \`$FRONTEND_TAG\` |
+          | источник | \`${SOURCE_SHA:-неизвестен}\` |
+          | прогон | ${SOURCE_RUN:-неизвестен} |
+
+          Меняются только две строки в \`infra/helm/frontend-tags.env\` — теги,
+          которыми CD выкатывает bff и frontend. После мёржа выкат пойдёт
+          этими образами; \`deploy.yml\` отдельно проверит, что они вообще
+          существуют в реестре.
+
+          Если проверок на этом PR нет — он открыт \`GITHUB_TOKEN\`, а события
+          от него намеренно не запускают workflow (защита GitHub от
+          рекурсии). Лечится секретом \`BOT_TOKEN\` с правами \`repo\`:
+          workflow подхватит его автоматически.
+          EOF
+
+          gh pr create --base main --head "$branch" \
+            --title "chore(deploy): теги образов фронта bff=$BFF_TAG frontend=$FRONTEND_TAG" \
+            --body-file "$RUNNER_TEMP/pr-body.md"
