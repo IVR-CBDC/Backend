@@ -1,0 +1,258 @@
+# APPLICATION ONLY. Existing databases/Redis/network are never created or updated here.
+name: ivrcbdc-prod
+services:
+  service-auth:
+    restart: unless-stopped
+    logging: &id001
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: '2'
+    networks: &id002
+    - private
+    security_opt: &id003
+    - no-new-privileges:true
+    pids_limit: 128
+    image: ${AUTH_IMAGE:?digest required}
+    mem_limit: 384m
+    environment:
+      DB_HOST: ${AUTH_DB_HOST:-pg-auth}
+      DB_PORT: ${AUTH_DB_PORT:-5432}
+      DB_NAME: ${AUTH_DB_NAME:-auth}
+      DB_USER: ${AUTH_DB_USER:-auth}
+      SERVICE_PORT: '8080'
+      JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public.jwk
+      JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_private.jwk
+    secrets:
+    - source: db_auth
+      target: db_password
+    - source: jwt_public_jwk
+      target: jwt_public.jwk
+    - source: jwt_private_jwk
+      target: jwt_private.jwk
+    volumes:
+    - ./scripts/secrets-entrypoint.sh:/opt/deploy/secrets-entrypoint.sh:ro
+    entrypoint:
+    - /bin/sh
+    - /opt/deploy/secrets-entrypoint.sh
+    command:
+    - /app/entrypoint.sh
+    - /usr/local/bin/service_auth
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - curl -fsS http://127.0.0.1:8080/health | grep -q '"ok":true'
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+  service-core:
+    restart: unless-stopped
+    logging: *id001
+    networks: *id002
+    security_opt: *id003
+    pids_limit: 128
+    image: ${CORE_IMAGE:?digest required}
+    mem_limit: 128m
+    environment:
+      DB_HOST: ${CORE_DB_HOST:-pg-core}
+      DB_PORT: ${CORE_DB_PORT:-5432}
+      DB_NAME: ${CORE_DB_NAME:-core}
+      DB_USER: ${CORE_DB_USER:-core}
+      SERVICE_PORT: '8080'
+      JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public.jwk
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      COMMISSION_URL: http://service-commission:8000
+      EMULATOR_ENABLED: 'true'
+      EMULATOR_SPEED: demo
+      EMULATOR_MANUAL: 'false'
+    secrets:
+    - source: db_core
+      target: db_password
+    - source: jwt_public_jwk
+      target: jwt_public.jwk
+    volumes:
+    - ./scripts/secrets-entrypoint.sh:/opt/deploy/secrets-entrypoint.sh:ro
+    entrypoint:
+    - /bin/sh
+    - /opt/deploy/secrets-entrypoint.sh
+    command:
+    - /app/entrypoint.sh
+    - /usr/local/bin/service_core
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - curl -fsS http://127.0.0.1:8080/health | grep -q '"ok":true'
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+  service-commission:
+    restart: unless-stopped
+    logging: *id001
+    networks: *id002
+    security_opt: *id003
+    pids_limit: 128
+    image: ${COMMISSION_IMAGE:?digest required}
+    mem_limit: 128m
+    environment:
+      DB_HOST: ${COMMISSION_DB_HOST:-pg-commission}
+      DB_PORT: ${COMMISSION_DB_PORT:-5432}
+      DB_NAME: ${COMMISSION_DB_NAME:-commission}
+      DB_USER: ${COMMISSION_DB_USER:-commission}
+      JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public.pem
+      PYTHONDONTWRITEBYTECODE: '1'
+    secrets:
+    - source: db_commission
+      target: db_password
+    - source: jwt_public_pem
+      target: jwt_public.pem
+    volumes:
+    - ./scripts/secrets-entrypoint.sh:/opt/deploy/secrets-entrypoint.sh:ro
+    entrypoint:
+    - /bin/sh
+    - /opt/deploy/secrets-entrypoint.sh
+    command:
+    - uvicorn
+    - app.main:build_default_app
+    - --factory
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8000'
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    user: ${DEPLOY_UID:?configure existing production connections}:${DEPLOY_GID:?configure existing production connections}
+  bff:
+    restart: unless-stopped
+    logging: *id001
+    networks: *id002
+    security_opt: *id003
+    pids_limit: 128
+    image: ${BFF_IMAGE:?digest required}
+    mem_limit: 128m
+    environment:
+      PORT: '4000'
+      AUTH_URL: http://service-auth:8080
+      CORE_URL: http://service-core:8080
+      COMMISSION_URL: http://service-commission:8000
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      ALLOWED_ORIGINS: https://alfacbcd.ru
+      COOKIE_SECURE: 'true'
+      NODE_OPTIONS: --max-old-space-size=64
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - wget -qO- http://127.0.0.1:4000/ready | grep -q '"ok":true'
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    depends_on:
+      service-auth:
+        condition: service_healthy
+      service-core:
+        condition: service_healthy
+      service-commission:
+        condition: service_healthy
+  frontend:
+    restart: unless-stopped
+    logging: *id001
+    networks: *id002
+    security_opt: *id003
+    pids_limit: 128
+    image: ${FRONTEND_IMAGE:?digest required}
+    mem_limit: 48m
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - wget -qO- http://127.0.0.1:8080/ | grep -qi '<html'
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    depends_on:
+      bff:
+        condition: service_healthy
+  proxy:
+    restart: unless-stopped
+    logging: *id001
+    networks:
+    - private
+    - edge
+    security_opt: *id003
+    pids_limit: 128
+    image: ${FRONTEND_IMAGE:?digest required}
+    user: 0:0
+    entrypoint:
+    - nginx
+    - -g
+    - daemon off;
+    mem_limit: 48m
+    ports:
+    - 80:8080
+    - 443:8443
+    volumes:
+    - ${SHARED_DIR:?configure existing production connections}/proxy:/etc/nginx/conf.d:ro
+    - ${SHARED_DIR}/acme:/var/www/acme:ro
+    - ${SHARED_DIR}/letsencrypt:/etc/letsencrypt:ro
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -qO-
+      - http://127.0.0.1:8081/health
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    depends_on:
+      bff:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+  certbot:
+    restart: 'no'
+    logging: *id001
+    networks:
+    - egress
+    security_opt: *id003
+    pids_limit: 128
+    profiles:
+    - tools
+    image: ${CERTBOT_IMAGE:?digest required}
+    mem_limit: 192m
+    volumes:
+    - ${SHARED_DIR}/acme:/var/www/acme
+    - ${SHARED_DIR}/letsencrypt:/etc/letsencrypt
+    tmpfs:
+    - /var/lib/letsencrypt:size=16m
+    - /var/log/letsencrypt:size=16m
+networks:
+  private:
+    external: true
+    name: ${APP_NETWORK:-ivrcbdc-prod_private}
+  egress: {}
+  edge: {}
+secrets:
+  db_auth:
+    file: ${SHARED_DIR}/secrets/db_auth
+  db_core:
+    file: ${SHARED_DIR}/secrets/db_core
+  db_commission:
+    file: ${SHARED_DIR}/secrets/db_commission
+  jwt_private_jwk:
+    file: ${SHARED_DIR}/secrets/jwt_private.jwk
+  jwt_public_jwk:
+    file: ${SHARED_DIR}/secrets/jwt_public.jwk
+  jwt_public_pem:
+    file: ${SHARED_DIR}/secrets/jwt_public.pem

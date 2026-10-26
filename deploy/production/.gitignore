@@ -1,0 +1,9 @@
+.env
+server.env
+images.env
+release.json
+secrets/
+shared/
+releases/
+*.tar.gz
+__pycache__/

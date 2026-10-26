@@ -7,3 +7,10 @@
 .idea
 .superpowers
 infra/keys/*private*
+
+# Never send local deployment state to a build context.
+deploy/production/shared/
+deploy/production/secrets/
+deploy/production/releases/
+deploy/production/.env
+deploy/production/server.env

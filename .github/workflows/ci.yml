@@ -380,3 +380,12 @@ jobs:
         with:
           name: api-compose-logs
           path: /tmp/compose-logs.txt
+
+  production-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate production Compose and release isolation (no deployment)
+        run: |
+          python3 deploy/production/tests/check.py
+          python3 deploy/production/tests/plan-check.py
