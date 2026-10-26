@@ -30,6 +30,8 @@ for key, ref in refs.items():
     for attempt in range(attempts):
         result=subprocess.run(['docker','buildx','imagetools','inspect',ref,'--format','{{.Manifest.Digest}}'],text=True,capture_output=True)
         if result.returncode==0: break
+        if any(word in result.stderr.lower() for word in ['unauthorized', 'forbidden', 'denied', 'insufficient_scope']):
+            raise SystemExit('GHCR read access denied: '+ref+'; grant Backend Actions Read access in package settings')
         if attempt+1==attempts: raise SystemExit('Image unavailable; check publication/package access: '+ref)
         time.sleep(10)
     digest=result.stdout.strip()

@@ -10,6 +10,7 @@ if ! setup_ssh; then
     echo 'Production not ready: configure SSH Secrets / valid unencrypted key and verified host key.' >> "$GITHUB_STEP_SUMMARY"
     exit 0
 fi
+ssh "${SSH_OPTS[@]}" -p "$PROD_PORT" "deploy@$PROD_HOST" 'python3 -' < "$HERE/inspect-connections.py" || echo 'Bootstrap capability checks incomplete'
 if ssh "${SSH_OPTS[@]}" -p "$PROD_PORT" "deploy@$PROD_HOST" 'bash -s' <<'REMOTE'
 set -euo pipefail
 root=/home/deploy/ivr-cbdc
