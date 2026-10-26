@@ -25,6 +25,7 @@ Compose управляет только шестью контейнерами: a
 | --- | --- |
 | Backend → Environment production | Существующие `PROD_HOST`, `PROD_SSH_KEY`, `PROD_SSH_KNOWN_HOSTS` |
 | Backend → repository variable | `PROD_SSH_PORT`, если действующий SSH-порт отличается от 22 |
+| Backend → repository secret / variable | `GHCR_READ_TOKEN`: отдельный classic PAT только с `read:packages`; `GHCR_USERNAME`: его владелец. При наличии workflow сам выполняет docker login на VPS и использует токен для чтения frontend-образов |
 | Frontend → repository secret | `BACKEND_DISPATCH_TOKEN`: fine-grained PAT только для Backend, `Contents: write` |
 | GHCR frontend/bff и frontend/spa | Manage Actions access → Backend → Read; либо публичные packages |
 | VPS, пользователь deploy | Для приватных образов `docker login ghcr.io -u YOUR_GITHUB_LOGIN`, отдельный PAT `read:packages` |
@@ -33,7 +34,7 @@ GitHub сам выдаёт `GITHUB_TOKEN`; workflows задают `packages: wri
 
 ## Подключение существующих сервисов на VPS
 
-Pipeline выполняет read-only SSH preflight. Пока настройки отсутствуют, образ собирается, но production не запускается. Причины указаны в журнале preflight. Маркер `shared/auto-deploy-ready` обозначает завершённую однократную настройку, а не подтверждение каждого обновления.
+Pipeline проверяет подключения через SSH без изменения БД. Если задан `GHCR_READ_TOKEN`, он сначала настраивает вход Docker в GHCR под deploy; токен передаётся только через SSH stdin, не через архив или логи. Остальная диагностика выполняется только на чтение и выводит исключительно статусы готовности. Пока настройки отсутствуют, образ собирается, но production не запускается. Причины указаны в журнале preflight. Маркер `shared/auto-deploy-ready` обозначает завершённую однократную настройку, а не подтверждение каждого обновления.
 
 Под пользователем deploy создайте только каталоги приложения:
 
@@ -44,7 +45,7 @@ mkdir -p /home/deploy/ivr-cbdc/{releases,incoming,shared/secrets,shared/proxy,sh
 
 1. По `server.env.example` подготовьте `/home/deploy/ivr-cbdc/shared/server.env` с действующими адресами/именами/пользователями БД и Redis. `APP_NETWORK` — уже существующая сеть, из которой они доступны. UID/GID берутся через `id -u deploy` / `id -g deploy`. Если сервисы на самом хосте, адрес должен быть доступен из Docker; `127.0.0.1` внутри приложения означает его контейнер.
 2. Подключите **существующие production-секреты** в `shared/secrets`: `db_auth`, `db_core`, `db_commission`, `jwt_private.jwk`, `jwt_public.jwk`, `jwt_public.pem`. Можно использовать ссылки на существующие серверные файлы. Не копируйте локальные секреты и не генерируйте новые пароли/ключи. Файлы должны быть доступны deploy; private key и пароли — с правами 600. JWT public JWK/PEM должны относиться к тому же ключу.
-3. Для приватного GHCR выполните вход Docker под deploy; защитите `~/.docker/config.json` правами 600. Проверьте DNS домена и отсутствие конфликта портов 80/443 с уже работающим proxy. SSH и firewall этот проект не меняет.
+3. Для приватного GHCR задайте `GHCR_READ_TOKEN` / `GHCR_USERNAME` в Backend для автоматического входа Docker, либо выполните вход вручную под deploy; защитите `~/.docker/config.json` правами 600. Проверьте DNS домена и отсутствие конфликта портов 80/443 с уже работающим proxy. SSH и firewall этот проект не меняет.
 4. Только после проверки существующих подключений и готовности к первому запуску создайте `touch /home/deploy/ivr-cbdc/shared/auto-deploy-ready`. Следующий обычный push автоматически запустит приложение.
 
 Если Redis требует пароль, BFF поддерживает его через `REDIS_URL`. Существующая C++-конфигурация core имеет только host/port; аутентификацию Redis/TLS без изменения приложения она не поддерживает. Не отключайте защиту Redis ради деплоя: это отдельный вопрос совместимости существующей инфраструктуры.

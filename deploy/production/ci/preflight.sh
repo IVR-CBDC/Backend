@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Read-only SSH audit. This script never initializes or starts production.
+# Configure optional registry credentials, then audit without starting production or changing databases.
 set -euo pipefail
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source-path=SCRIPTDIR
@@ -9,6 +9,19 @@ echo 'ready=false' >> "$GITHUB_OUTPUT"
 if ! setup_ssh; then
     echo 'Production not ready: configure SSH Secrets / valid unencrypted key and verified host key.' >> "$GITHUB_STEP_SUMMARY"
     exit 0
+fi
+if [[ -n "${GHCR_READ_TOKEN:-}" ]]; then
+    if [[ ! "${GHCR_USERNAME:-}" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]]; then
+        echo 'Missing valid GHCR_USERNAME repository variable' >> "$GITHUB_STEP_SUMMARY"
+        exit 0
+    fi
+    # The read-only registry credential goes directly into Docker over SSH stdin.
+    # Never print it, pass it as an argument, or upload it in an artifact.
+    if ! printf '%s' "$GHCR_READ_TOKEN" | ssh "${SSH_OPTS[@]}" -p "$PROD_PORT" "deploy@$PROD_HOST" \
+        "docker login ghcr.io --username '$GHCR_USERNAME' --password-stdin" > /dev/null; then
+        echo 'Registry authentication failed; production not started.' >> "$GITHUB_STEP_SUMMARY"
+        exit 0
+    fi
 fi
 ssh "${SSH_OPTS[@]}" -p "$PROD_PORT" "deploy@$PROD_HOST" 'python3 -' < "$HERE/inspect-connections.py" || echo 'Bootstrap capability checks incomplete'
 if ssh "${SSH_OPTS[@]}" -p "$PROD_PORT" "deploy@$PROD_HOST" 'bash -s' <<'REMOTE'

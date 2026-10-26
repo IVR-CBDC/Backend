@@ -66,12 +66,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: check
-        name: Read-only VPS readiness (no deployment)
+        name: Configure registry access and check VPS readiness (no deployment)
         env:
           PROD_HOST: ${{ secrets.PROD_HOST }}
           PROD_PORT: ${{ vars.PROD_SSH_PORT || '22' }}
           PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
           PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
         run: bash deploy/production/ci/preflight.sh
 
   cpp-base:
@@ -158,8 +160,8 @@ jobs:
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ vars.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GHCR_READ_TOKEN || secrets.GITHUB_TOKEN }}
       - id: bundle
         env:
           BACKEND_SHA: ${{ needs.plan.outputs.backend_sha }}
