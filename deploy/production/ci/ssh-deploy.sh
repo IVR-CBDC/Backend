@@ -25,9 +25,11 @@ tar --no-same-owner -xzf release.tar.gz -C "$root/releases/$release_id"
 rm release.tar.gz release.tar.gz.sha256
 cd "$root"
 rmdir "$root/incoming/$release_id"
-bash "$root/releases/$release_id/scripts/deploy.sh" --apply "$root/releases/$release_id"
+# Child commands must never consume the remaining bash -s SSH script.
+bash "$root/releases/$release_id/scripts/deploy.sh" --apply "$root/releases/$release_id" </dev/null
 if [[ ! -f "$root/shared/tls-enabled" ]]; then
-    bash "$root/current/scripts/tls.sh" --issue-without-email --accept-terms
+    bash "$root/current/scripts/tls.sh" --issue-without-email --accept-terms </dev/null
 fi
-bash "$root/current/scripts/renewal-cron.sh"
+bash "$root/current/scripts/renewal-cron.sh" </dev/null
+echo 'DEPLOYMENT_COMPLETE application_https_and_renewal_ready=true'
 REMOTE

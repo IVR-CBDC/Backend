@@ -16,4 +16,5 @@ crontab -l > "$current" 2>/dev/null || : > "$current"
 awk 'index($0, "# ivrcbdc-managed-renewal") == 0' "$current" > "$updated"
 printf '17 3,15 * * * PATH=/usr/local/bin:/usr/bin:/bin /bin/bash %s/current/scripts/tls.sh --renew 2>&1 | /usr/bin/logger -t ivrcbdc-tls # ivrcbdc-managed-renewal\n' "$PROD_ROOT" >> "$updated"
 crontab "$updated"
+crontab -l | grep -Fq -- '# ivrcbdc-managed-renewal' || fail 'Renewal cron installation could not be verified'
 echo 'Automatic certificate renewal scheduled twice daily.'

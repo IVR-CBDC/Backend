@@ -36,6 +36,7 @@ jobs:
           INITIALIZE_PRODUCTION: ${{ vars.INITIALIZE_PRODUCTION }}
         run: |
           python3 deploy/production/tests/check.py
+          python3 deploy/production/tests/ssh-check.py
           python3 deploy/production/tests/plan-check.py
           if [[ "$INITIALIZE_PRODUCTION" == true ]]; then
             docker pull postgres:16-alpine

@@ -84,6 +84,7 @@ mkdir -p /home/deploy/ivr-cbdc/{releases,incoming,shared/secrets,shared/proxy,sh
 
 ```bash
 python3 deploy/production/tests/check.py
+python3 deploy/production/tests/ssh-check.py
 python3 deploy/production/tests/plan-check.py
 ```
 
