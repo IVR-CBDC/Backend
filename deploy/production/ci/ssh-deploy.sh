@@ -23,6 +23,7 @@ test ! -e "$root/releases/$release_id"
 mkdir "$root/releases/$release_id"
 tar --no-same-owner -xzf release.tar.gz -C "$root/releases/$release_id"
 rm release.tar.gz release.tar.gz.sha256
+cd "$root"
 rmdir "$root/incoming/$release_id"
 bash "$root/releases/$release_id/scripts/deploy.sh" --apply "$root/releases/$release_id"
 if [[ ! -f "$root/shared/tls-enabled" ]]; then
