@@ -73,6 +73,14 @@ jobs:
       ready: ${{ steps.check.outputs.ready }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install missing host cron once
+        if: vars.INSTALL_CRON_ONCE == 'true'
+        env:
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          PROD_PORT: ${{ vars.PROD_SSH_PORT || '22' }}
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+        run: bash deploy/production/ci/ssh-cron-setup.sh
       - name: Initialize application schema and secrets once in existing services
         if: vars.INITIALIZE_PRODUCTION == 'true'
         env:
