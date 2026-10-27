@@ -42,7 +42,7 @@ out.mkdir(parents=True)
 for name in ['compose.yaml','server.env.example','README.md']:
     shutil.copy2(prod/name,out/name)
 (out/'scripts').mkdir()
-for name in ['common.sh','validate-release.py','deploy.sh','prune.sh','tls.sh','compose.sh','secrets-entrypoint.sh']:
+for name in ['common.sh','validate-release.py','deploy.sh','prune.sh','tls.sh','renewal-cron.sh','compose.sh','secrets-entrypoint.sh']:
     shutil.copy2(prod/'scripts'/name,out/'scripts'/name)
 (out/'proxy').mkdir()
 for name in ['http.conf','https.conf']:

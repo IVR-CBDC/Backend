@@ -25,4 +25,8 @@ tar --no-same-owner -xzf release.tar.gz -C "$root/releases/$release_id"
 rm release.tar.gz release.tar.gz.sha256
 rmdir "$root/incoming/$release_id"
 bash "$root/releases/$release_id/scripts/deploy.sh" --apply "$root/releases/$release_id"
+if [[ ! -f "$root/shared/tls-enabled" ]]; then
+    bash "$root/current/scripts/tls.sh" --issue-without-email --accept-terms
+fi
+bash "$root/current/scripts/renewal-cron.sh"
 REMOTE

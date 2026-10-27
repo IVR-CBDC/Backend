@@ -11,7 +11,6 @@ import math
 import os
 from pathlib import Path
 import re
-import secrets
 import subprocess
 import sys
 import tempfile
@@ -98,10 +97,12 @@ def db_client(container, user=None, password=None, database='postgres'):
         if not password and config.get('POSTGRES_PASSWORD_FILE'):
             password = execute(['docker', 'exec', container['Id'], 'cat', config['POSTGRES_PASSWORD_FILE']]).rstrip('\n')
     client_env = dict(os.environ, PGPASSWORD=password,
-                      PGOPTIONS='-c statement_timeout=60000 -c lock_timeout=15000', PGCONNECT_TIMEOUT='10')
+                      PGOPTIONS='-c statement_timeout=60000 -c lock_timeout=15000 -c standard_conforming_strings=on', PGCONNECT_TIMEOUT='10')
+    # Use the container network address: localhost may use trust authentication
+    # in PostgreSQL images, which would accept even an incorrect password.
     cmd = ['docker', 'exec', '-i', '-e', 'PGPASSWORD', '-e', 'PGOPTIONS', '-e', 'PGCONNECT_TIMEOUT',
            container['Id'], 'psql', '-X', '-w', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1',
-           '-h', '127.0.0.1', '-U', user or config.get('POSTGRES_USER', 'postgres'), '-d', database]
+           '-h', container['Name'].lstrip('/'), '-U', user or config.get('POSTGRES_USER', 'postgres'), '-d', database]
     def query(sql):
         return execute(cmd, value=sql, env=client_env, stage='database_query_failed').strip()
     return query
@@ -201,6 +202,35 @@ def initialize(root, schemas, inventory=None):
         state = shared/'bootstrap-state.json'
         planned = {s: {'host': c['Name'].lstrip('/'), 'database': 'ivrcbdc_'+s, 'role': 'ivrcbdc_'+s}
                    for s, c in targets.items()}
+        # Existing passwords belong to the running installation. Read exactly as
+        # the runtime shell wrapper does, preserve the file bytes, and authenticate
+        # every existing secret before any CREATE ROLE/DATABASE or schema change.
+        passwords = {}
+        for service, container in targets.items():
+            path = shared/'secrets'/('db_'+service)
+            if not path.exists():
+                raise BootstrapError('existing_db_secret_missing_refusing_generation')
+            try:
+                password = path.read_bytes().decode('utf-8').rstrip('\n')
+            except (OSError, UnicodeError):
+                raise BootstrapError('existing_db_secret_unreadable') from None
+            if not password or any(ord(c) < 32 or ord(c) == 127 for c in password):
+                raise BootstrapError('existing_db_secret_empty_or_unsupported_control_character')
+            name = planned[service]['role']
+            admin = db_client(container)
+            existing_role = admin('SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='+literal(name)+');')
+            # On resume, a previously created restricted role uses this password.
+            # Before role creation, the provided secret authenticates the existing
+            # PostgreSQL owner. Never ALTER an existing password to make it fit.
+            user = name if existing_role == 't' else None
+            try:
+                if db_client(container, user=user, password=password)('SELECT 1;') != '1':
+                    raise BootstrapError('existing_db_secret_connection_failed')
+            except BootstrapError:
+                raise BootstrapError('existing_db_secret_connection_failed') from None
+            passwords[service] = password
+        if passwords:
+            print('BOOTSTRAP existing_db_secrets_authenticated=true')
         if state.exists():
             if json.loads(state.read_text()) != planned:
                 raise BootstrapError('bootstrap_targets_changed_refusing_reconfigure')
@@ -215,14 +245,9 @@ def initialize(root, schemas, inventory=None):
                 if present != 'f':
                     raise BootstrapError('existing_app_database_or_role_refusing_adoption')
             atomic_new(state, json.dumps(planned, sort_keys=True)+'\n')
-        # Secrets are created only on VPS, before roles, so an interrupted run can resume.
+        # Only existing, successfully authenticated passwords are used.
         for service, container in targets.items():
-            path = shared/'secrets'/('db_'+service)
-            if not path.exists():
-                atomic_new(path, secrets.token_hex(32))
-            password = path.read_text()
-            if not re.fullmatch('[0-9a-f]{64}', password):
-                raise BootstrapError('existing_db_secret_unexpected_refusing_overwrite')
+            password = passwords[service]
             name = planned[service]['database']
             admin = db_client(container)
             exists = admin('SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='+literal(name)+');')

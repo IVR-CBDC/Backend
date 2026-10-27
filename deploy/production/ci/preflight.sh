@@ -50,7 +50,7 @@ v=dict(line.split('=',1) for line in p.read_text().splitlines() if line and not 
 print(v.get('APP_NETWORK','ivrcbdc-prod_private'))
 PYCODE
 )
-check 'existing application/data network' docker network inspect "$network" --format '{{.Name}}'
+check 'existing application/data network' bash -c 'docker network inspect "$1" >/dev/null' _ "$network"
 check 'registry login for private GHCR images' test -s "$HOME/.docker/config.json"
 for path in /home/deploy "$(docker info --format '{{.DockerRootDir}}')" /var/lib/containerd; do
     [[ -e "$path" ]] || continue

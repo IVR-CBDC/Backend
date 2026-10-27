@@ -148,4 +148,48 @@ exit 0
     assert (root/'current').resolve()==second and (root/'previous').resolve()==release
     audit()
 
-print('PASS: syntax; immutable images; application-only Compose; release allowlist; limits; low-disk/pull abort; promotion; health rollback and rollback-failure reporting; no database operations; secrets preserved')
+
+    # TLS and cron recovery use only stubs: no certificate request or host cron edit.
+    docker.write_text("""#!/bin/sh
+printf '%s\\n' "$*" >> "$TEST_CALLS"
+if [ "$1" = info ]; then printf '%s\\n' "$TEST_DOCKER_ROOT"; fi
+case "$*" in
+  *"certbot certonly "*) [ "${FAIL_ACME:-0}" != 1 ] || exit 1;;
+  *"proxy nginx -t"*)
+    if [ "${FAIL_NGINX:-0}" = 1 ] && grep -q 'ssl_certificate' "$PROD_ROOT/shared/proxy/default.conf"; then exit 1; fi;;
+esac
+exit 0
+""")
+    (bin_dir/'curl').write_text('#!/bin/sh\n[ "${FAIL_HTTPS:-0}" != 1 ]\n')
+    proxy_config=shared/'proxy/default.conf'
+    original_proxy=proxy_config.read_bytes()
+    for flag in ('FAIL_ACME','FAIL_NGINX','FAIL_HTTPS'):
+        r=run(['bash',str(second/'scripts/tls.sh'),'--issue-without-email','--accept-terms'],env=dict(env,**{flag:'1'}))
+        assert r.returncode, flag
+        assert proxy_config.read_bytes()==original_proxy, flag
+        assert not (shared/'tls-enabled').exists(), flag
+        audit()
+    ok(['bash',str(second/'scripts/tls.sh'),'--issue-without-email','--accept-terms'],env=env)
+    assert (shared/'tls-enabled').exists()
+    assert 'ssl_certificate' in proxy_config.read_text()
+    assert (shared/'acme').stat().st_mode & 0o777 == 0o755
+    calls.write_text('')
+    ok(['bash',str(second/'scripts/tls.sh'),'--renew'],env=env)
+    assert 'certbot renew' in calls.read_text() and 'certonly' not in calls.read_text()
+    cronfile=temp/'crontab'
+    cronfile.write_text('5 * * * * existing-job # unrelated\n')
+    env['TEST_CRONTAB']=str(cronfile)
+    (bin_dir/'systemctl').write_text('#!/bin/sh\n[ "${NO_CRON:-0}" != 1 ]\n')
+    (bin_dir/'systemctl').chmod(0o755)
+    (bin_dir/'crontab').write_text('#!/bin/sh\nif [ "$1" = -l ]; then cat "$TEST_CRONTAB"; else cp "$1" "$TEST_CRONTAB"; fi\n')
+    (bin_dir/'crontab').chmod(0o755)
+    r=run(['bash',str(second/'scripts/renewal-cron.sh')],env=dict(env,NO_CRON='1'))
+    assert r.returncode and cronfile.read_text()=='5 * * * * existing-job # unrelated\n'
+    for _ in range(2):
+        ok(['bash',str(second/'scripts/renewal-cron.sh')],env=env)
+    cron=cronfile.read_text()
+    assert cron.count('# ivrcbdc-managed-renewal')==1
+    assert cron.startswith('5 * * * * existing-job # unrelated\n')
+    audit()
+
+print('PASS: syntax; immutable images; application-only Compose; release allowlist; limits; low-disk/pull abort; promotion; health rollback and rollback-failure reporting; no database operations; secrets preserved; TLS issuance/validation failure recovery; renewal cron preserves unrelated jobs')
