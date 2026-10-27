@@ -27,7 +27,7 @@ mkdir -p "$SHARED/acme"
 chmod 755 "$SHARED/acme"
 "${DC[@]}" --profile tools pull certbot
 if [[ "$mode" != --renew ]]; then
-    "${DC[@]}" --profile tools run --rm --no-deps -T certbot certonly --non-interactive \
+    "${DC[@]}" --profile tools run --rm --no-deps -T certbot certonly --non-interactive --keep-until-expiring \
         --webroot -w /var/www/acme --domain alfacbcd.ru --cert-name alfacbcd.ru \
         "${registration[@]}" --agree-tos --no-eff-email
 fi
@@ -51,7 +51,7 @@ if ! "${DC[@]}" exec -T proxy nginx -t || ! "${DC[@]}" exec -T proxy nginx -s re
     restore_proxy || true
     fail 'nginx rejected TLS; previous proxy config and all certificate files preserved'
 fi
-if ! curl --noproxy '*' --retry 5 --retry-connrefused --retry-delay 1 --connect-timeout 5 --max-time 15 \
+if ! curl --noproxy '*' --retry 5 --retry-all-errors --retry-connrefused --retry-delay 1 --connect-timeout 5 --max-time 15 \
     --fail --silent --show-error --resolve alfacbcd.ru:443:127.0.0.1 https://alfacbcd.ru/ -o /dev/null; then
     restore_proxy || true
     fail 'HTTPS verification failed; previous proxy config restored'
